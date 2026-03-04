@@ -13,7 +13,9 @@ dist
 dist-ssr
 *.local
 
-input/*
+input/*.jpg
+input/*.png
+input/*.jpeg
 output
 assets
 
