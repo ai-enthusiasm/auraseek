@@ -1,6 +1,18 @@
-// Prevents additional console window on Windows in release, DO NOT REMOVE!!
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+mod utils;
+mod model;
+mod processor;
 
-fn main() {
-    auraseek_lib::run()
+use anyhow::Result;
+use processor::AuraSeekEngine;
+use utils::logger::Logger;
+
+fn main() -> Result<()> {
+    // initialize logger
+    Logger::init("log/.log");
+    
+    // load engine
+    let mut engine = AuraSeekEngine::new_default()?;
+    engine.run_dir("input", "output")?;
+
+    Ok(())
 }

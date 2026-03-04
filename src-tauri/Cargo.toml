@@ -1,25 +1,27 @@
 [package]
 name = "auraseek"
-version = "0.1.0"
-description = "A Tauri App"
-authors = ["you"]
-edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
-[lib]
-# The `_lib` suffix may seem redundant but it is necessary
-# to make the lib name unique and wouldn't conflict with the bin name.
-# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
-name = "auraseek_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
-
-[build-dependencies]
-tauri-build = { version = "2", features = [] }
+version = "1.0.0"
+description = "AuraSeek"
+authors = ["AI Enthusiasm"]
+edition = "2024"
 
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+ort            = "2.0.0-rc.9"
+image          = "0.24"
+imageproc      = "0.23"
+ab_glyph       = "0.2"
+rusttype       = "0.9"
+anyhow         = "1.0"
+regex          = "1.10"
+serde          = { version = "1.0", features = ["derive"] }
+serde_json     = "1.0"
+opencv         = "0.92"
+uuid           = { version = "1.0", features = ["v4", "v5"] }
+chrono         = "0.4"
 
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+ureq           = "2.9"
+anyhow         = "1.0"
