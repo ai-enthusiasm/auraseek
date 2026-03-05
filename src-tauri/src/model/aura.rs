@@ -24,10 +24,11 @@ impl AuraModel {
         &mut self,
         input_ids:      Vec<i64>,
         attention_mask: Vec<i64>,
-        seq_len:        usize,
+        _seq_len:       usize, // Retained in signature for compatibility, but ignored
     ) -> Result<Vec<f32>> {
-        let ids_tensor  = Value::from_array((vec![1, seq_len], input_ids.into_boxed_slice()))?;
-        let mask_tensor = Value::from_array((vec![1, seq_len], attention_mask.into_boxed_slice()))?;
+        let actual_len = input_ids.len();
+        let ids_tensor  = Value::from_array((vec![1, actual_len], input_ids.into_boxed_slice()))?;
+        let mask_tensor = Value::from_array((vec![1, actual_len], attention_mask.into_boxed_slice()))?;
         let outputs = self.text_session.run(ort::inputs![
             "input_ids"      => ids_tensor,
             "attention_mask" => mask_tensor,

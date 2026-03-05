@@ -8,6 +8,16 @@ use crate::model::{AuraModel, YoloModel, FaceModel};
 use crate::processor::{TextProcessor, vision::{preprocess_aura, letterbox_640, YoloProcessor, FaceDb, cosine_similarity}};
 use crate::utils::visualize::{draw_detections, draw_segmentation, draw_faces, extract_masks, load_rgb, save_rgb};
 use crate::{log_info, log_warn, utils::{GREEN, YELLOW, RED, CYAN, MAGENTA, BOLD, RESET}};
+use crate::processor::vision::yolo_postprocess::DetectionRecord;
+use crate::model::face::FaceGroup;
+
+/// Structured output from the AI pipeline, ready for DB storage.
+#[derive(Debug, Clone)]
+pub struct EngineOutput {
+    pub objects:          Vec<DetectionRecord>,
+    pub faces:            Vec<FaceGroup>,
+    pub vision_embedding: Vec<f32>,
+}
 
 const DEFAULT_CONFIG: EngineConfig = EngineConfig {
     vision_path:  "assets/models/vision_tower_aura.onnx",
@@ -68,6 +78,48 @@ impl AuraSeekEngine {
         };
 
         Ok(Self { aura, text_proc, yolo, face, face_db, session_faces: Vec::new() })
+    }
+
+    /// Run AI pipeline on a single image and return structured output (no disk I/O).
+    pub fn process_image(&mut self, img_path: &str) -> Result<EngineOutput> {
+        // 1. Vision embedding
+        let vision_emb = self.aura.encode_image(preprocess_aura(img_path)?, 256, 256)
+            .unwrap_or_default();
+
+        // 2. YOLO detection + segmentation
+        let lb = letterbox_640(img_path)?;
+        let raw = self.yolo.detect(lb.blob.clone())?;
+        let objects = YoloProcessor::postprocess(&raw, &lb, 0.25, 0.45);
+
+        // 3. Face detection
+        let mut faces = vec![];
+        if let Some(ref mut fm) = self.face {
+            if let Ok(detected) = fm.detect_from_path(img_path, &self.face_db) {
+                for mut f in detected {
+                    if f.face_id == "unknown_placeholder" {
+                        let mut best_score = 0.36;
+                        let mut cached_id = None;
+                        for (cached_emb, id) in &self.session_faces {
+                            let score = cosine_similarity(&f.embedding, cached_emb);
+                            if score > best_score {
+                                best_score = score;
+                                cached_id = Some(id.clone());
+                            }
+                        }
+                        if let Some(id) = cached_id {
+                            f.face_id = id;
+                        } else {
+                            let new_id = Uuid::new_v4().to_string();
+                            f.face_id = new_id.clone();
+                            self.session_faces.push((f.embedding.clone(), new_id));
+                        }
+                    }
+                    faces.push(f);
+                }
+            }
+        }
+
+        Ok(EngineOutput { objects, faces, vision_embedding: vision_emb })
     }
 
     pub fn run_dir(&mut self, input_dir: &str, output_dir: &str) -> Result<()> {
