@@ -5,7 +5,7 @@
   "identifier": "com.aienthusiasm.auraseek",
   "build": {
     "beforeDevCommand": "yarn dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1422",
     "beforeBuildCommand": "yarn build",
     "frontendDist": "../dist"
   },
