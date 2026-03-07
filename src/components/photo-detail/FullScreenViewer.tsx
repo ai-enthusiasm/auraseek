@@ -40,13 +40,23 @@ export function FullScreenViewer({ photo, onClose }: { photo: Photo, onClose: ()
                     </div>
                 </div>
 
-                {/* The Image */}
+                {/* Image or Video */}
                 <div className="flex-1 flex items-center justify-center p-4">
-                    <img
-                        src={photo.url}
-                        alt="View"
-                        className="w-full h-full object-contain"
-                    />
+                    {photo.type === "video" ? (
+                        <video
+                            src={photo.url}
+                            controls
+                            autoPlay
+                            className="max-w-full max-h-full object-contain rounded"
+                            style={{ maxHeight: "calc(100vh - 80px)" }}
+                        />
+                    ) : (
+                        <img
+                            src={photo.url}
+                            alt="View"
+                            className="w-full h-full object-contain"
+                        />
+                    )}
                 </div>
             </div>
 

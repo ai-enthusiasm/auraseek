@@ -18,40 +18,86 @@ use ingest::image_ingest::IngestSummary;
 use search::pipeline::{SearchPipeline, SearchQuery};
 use utils::logger::Logger;
 
+// ─── Sync status ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncStatus {
+    pub state:     String, // "idle" | "syncing" | "done" | "error"
+    pub processed: usize,
+    pub total:     usize,
+    pub message:   String,
+}
+
+impl Default for SyncStatus {
+    fn default() -> Self {
+        Self { state: "idle".into(), processed: 0, total: 0, message: "Chưa đồng bộ".into() }
+    }
+}
+
 // ─── App State ───────────────────────────────────────────────────────────────
 
 pub struct AppState {
-    pub engine:     Arc<Mutex<Option<AuraSeekEngine>>>,
-    pub db:         Arc<Mutex<Option<SurrealDb>>>,
-    /// SurrealDB address, e.g. "127.0.0.1:8000"
+    pub engine:       Arc<Mutex<Option<AuraSeekEngine>>>,
+    pub db:           Arc<Mutex<Option<SurrealDb>>>,
     pub surreal_addr: Mutex<String>,
     pub surreal_user: Mutex<String>,
     pub surreal_pass: Mutex<String>,
+    /// Loaded from config_auraseek on init; kept in memory to avoid repeated DB queries
+    pub source_dir:   Mutex<String>,
+    pub sync_status:  Arc<Mutex<SyncStatus>>,
 }
 
 impl AppState {
     fn new() -> Self {
         Self {
-            engine: Arc::new(Mutex::new(None)),
-            db: Arc::new(Mutex::new(None)),
+            engine:       Arc::new(Mutex::new(None)),
+            db:           Arc::new(Mutex::new(None)),
             surreal_addr: Mutex::new("127.0.0.1:8000".to_string()),
             surreal_user: Mutex::new("root".to_string()),
             surreal_pass: Mutex::new("root".to_string()),
+            source_dir:   Mutex::new(String::new()),
+            sync_status:  Arc::new(Mutex::new(SyncStatus::default())),
         }
     }
 }
 
+// ─── RAM helper ──────────────────────────────────────────────────────────────
+
+/// Returns available RAM as a percentage of total (Linux: reads /proc/meminfo).
+fn available_ram_percent() -> f64 {
+    if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+        let mut mem_total: u64 = 0;
+        let mut mem_avail: u64 = 0;
+        for line in content.lines() {
+            if line.starts_with("MemTotal:") {
+                mem_total = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            } else if line.starts_with("MemAvailable:") {
+                mem_avail = line.split_whitespace().nth(1).and_then(|v| v.parse().ok()).unwrap_or(0);
+            }
+        }
+        if mem_total > 0 {
+            return (mem_avail as f64 / mem_total as f64) * 100.0;
+        }
+    }
+    // macOS fallback or unknown: assume OK
+    50.0
+}
+
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
 
-/// Initialize AI engine and SurrealDB connection.
+/// Initialize AI engine and SurrealDB connection, load source_dir from config.
 #[tauri::command]
 async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
     // Init engine
     {
         let mut engine_guard = state.engine.lock().await;
         if engine_guard.is_none() {
+            crate::log_info!("🚀 Initializing AI engine...");
             match AuraSeekEngine::new_default() {
-                Ok(e) => { *engine_guard = Some(e); }
+                Ok(e) => {
+                    crate::log_info!("✅ AI engine ready");
+                    *engine_guard = Some(e);
+                }
                 Err(e) => return Err(format!("Engine init failed: {}", e)),
             }
         }
@@ -65,15 +111,31 @@ async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
         let mut db_guard = state.db.lock().await;
         if db_guard.is_none() {
             match SurrealDb::connect(&addr, &user, &pass).await {
-                Ok(sdb) => {
-                    *db_guard = Some(sdb);
-                }
+                Ok(sdb) => { *db_guard = Some(sdb); }
                 Err(e) => return Err(format!("SurrealDB connection failed: {}", e)),
             }
         }
     }
 
-    // Get embedding count
+    // Load source_dir from config_auraseek
+    {
+        let db_guard = state.db.lock().await;
+        if let Some(ref sdb) = *db_guard {
+            match DbOperations::get_source_dir(sdb).await {
+                Ok(Some(dir)) => {
+                    crate::log_info!("📂 source_dir loaded from config: {}", dir);
+                    *state.source_dir.lock().await = dir;
+                }
+                Ok(None) => {
+                    crate::log_info!("📂 No source_dir configured yet (first run)");
+                }
+                Err(e) => {
+                    crate::log_warn!("⚠️ Failed to load source_dir: {}", e);
+                }
+            }
+        }
+    }
+
     let count = {
         let db_guard = state.db.lock().await;
         if let Some(ref sdb) = *db_guard {
@@ -81,21 +143,186 @@ async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
         } else { 0 }
     };
 
+    let source_dir = state.source_dir.lock().await.clone();
+    crate::log_info!("✅ Init complete | embeddings={} source_dir='{}'", count, source_dir);
     Ok(format!("Ready. Embeddings: {}", count))
 }
 
-/// Scan a folder for images/videos and run AI pipeline.
+/// Get the configured source directory.
+#[tauri::command]
+async fn cmd_get_source_dir(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.source_dir.lock().await.clone())
+}
+
+/// Set source directory and persist to config_auraseek. Then trigger auto-scan.
+#[tauri::command]
+async fn cmd_set_source_dir(
+    dir: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    {
+        let db_guard = state.db.lock().await;
+        let db = db_guard.as_ref().ok_or("DB not initialized")?;
+        DbOperations::set_source_dir(db, &dir).await.map_err(|e| e.to_string())?;
+    }
+    *state.source_dir.lock().await = dir.clone();
+    crate::log_info!("📂 source_dir updated to: {}", dir);
+    Ok(())
+}
+
+/// Get current sync status.
+#[tauri::command]
+async fn cmd_get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
+    Ok(state.sync_status.lock().await.clone())
+}
+
+/// Start background auto-scan (called by frontend on app load if source_dir is set).
+/// Checks RAM: requires >40% free before starting.
+#[tauri::command]
+async fn cmd_auto_scan(state: State<'_, AppState>) -> Result<String, String> {
+    let source_dir = state.source_dir.lock().await.clone();
+    if source_dir.is_empty() {
+        return Err("No source directory configured".into());
+    }
+
+    // RAM check
+    let ram_pct = available_ram_percent();
+    crate::log_info!("🖥️  Available RAM: {:.1}%", ram_pct);
+    if ram_pct < 40.0 {
+        let msg = format!("Không đủ RAM ({:.1}% trống, cần >40%). Đóng bớt ứng dụng và thử lại.", ram_pct);
+        crate::log_warn!("⚠️ {}", msg);
+        return Err(msg);
+    }
+
+    // Check if already syncing
+    {
+        let st = state.sync_status.lock().await;
+        if st.state == "syncing" {
+            return Ok("Already syncing".into());
+        }
+    }
+
+    let engine_arc = state.engine.clone();
+    let db_arc     = state.db.clone();
+    let sync_arc   = state.sync_status.clone();
+    let dir        = source_dir.clone();
+
+    crate::log_info!("🔄 Auto-scan starting for: {}", dir);
+    {
+        let mut st = sync_arc.lock().await;
+        *st = SyncStatus { state: "syncing".into(), processed: 0, total: 0, message: "Đang đồng bộ dữ liệu...".into() };
+    }
+
+    tokio::spawn(async move {
+        let result = ingest::image_ingest::ingest_folder(
+            dir.clone(), db_arc, engine_arc, None
+        ).await;
+
+        let mut st = sync_arc.lock().await;
+        match result {
+            Ok(summary) => {
+                crate::log_info!("✅ Auto-scan done: new={} skip={} err={}", summary.newly_added, summary.skipped_dup, summary.errors);
+                *st = SyncStatus {
+                    state: "done".into(),
+                    processed: summary.newly_added,
+                    total: summary.total_found,
+                    message: format!("Đã đồng bộ ({} ảnh mới)", summary.newly_added),
+                };
+            }
+            Err(e) => {
+                crate::log_error!("❌ Auto-scan failed: {}", e);
+                *st = SyncStatus {
+                    state: "error".into(),
+                    processed: 0,
+                    total: 0,
+                    message: format!("Lỗi đồng bộ: {}", e),
+                };
+            }
+        }
+    });
+
+    Ok("Sync started".into())
+}
+
+/// Scan a folder for images/videos and run AI pipeline (manual trigger).
 #[tauri::command]
 async fn cmd_scan_folder(
     source_path: String,
     state: State<'_, AppState>,
 ) -> Result<IngestSummary, String> {
     let engine_arc = state.engine.clone();
-    let db_arc = state.db.clone();
-
+    let db_arc     = state.db.clone();
     ingest::image_ingest::ingest_folder(source_path, db_arc, engine_arc, None)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Ingest specific image files (drag-drop from outside the source folder).
+/// Files are copied to source_dir then processed.
+#[tauri::command]
+async fn cmd_ingest_files(
+    file_paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<IngestSummary, String> {
+    let source_dir = state.source_dir.lock().await.clone();
+    if source_dir.is_empty() {
+        return Err("Chưa chọn thư mục nguồn ảnh".into());
+    }
+    let engine_arc = state.engine.clone();
+    let db_arc     = state.db.clone();
+    ingest::image_ingest::ingest_files(file_paths, source_dir, db_arc, engine_arc)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Ingest a raw image from clipboard (paste of screenshot / browser image).
+/// `data` is base64-encoded image bytes; `ext` is the format (e.g. "png", "jpg").
+#[tauri::command]
+async fn cmd_ingest_image_data(
+    data: String,
+    ext: String,
+    state: State<'_, AppState>,
+) -> Result<IngestSummary, String> {
+    use base64::Engine as _;
+
+    let source_dir = state.source_dir.lock().await.clone();
+    if source_dir.is_empty() {
+        return Err("Chưa chọn thư mục nguồn ảnh".into());
+    }
+
+    let ext = ext.trim_start_matches('.').to_lowercase();
+    let allowed = ["jpg", "jpeg", "png", "webp"];
+    if !allowed.contains(&ext.as_str()) {
+        return Err(format!("Định dạng ảnh '{}' không được hỗ trợ", ext));
+    }
+
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|e| format!("Lỗi giải mã base64: {}", e))?;
+
+    let ts       = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis();
+    let filename = format!("paste_{}.{}", ts, ext);
+    let dest     = std::path::Path::new(&source_dir).join(&filename);
+
+    std::fs::write(&dest, &bytes)
+        .map_err(|e| format!("Không thể lưu ảnh: {}", e))?;
+
+    crate::log_info!("📋 Clipboard image saved: {}", dest.display());
+
+    // Ingest the saved file (already in source_dir — ingest_files skips copy if same dir)
+    let engine_arc = state.engine.clone();
+    let db_arc     = state.db.clone();
+    ingest::image_ingest::ingest_files(
+        vec![dest.to_string_lossy().to_string()],
+        source_dir,
+        db_arc,
+        engine_arc,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Search by text query.
@@ -200,9 +427,10 @@ async fn cmd_get_timeline(
     limit: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<Vec<TimelineGroup>, String> {
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_timeline(db, limit.unwrap_or(5000))
+    let db_guard   = state.db.lock().await;
+    let db         = db_guard.as_ref().ok_or("DB not initialized")?;
+    let source_dir = state.source_dir.lock().await.clone();
+    DbOperations::get_timeline(db, limit.unwrap_or(5000), &source_dir)
         .await.map_err(|e| e.to_string())
 }
 
@@ -211,9 +439,10 @@ async fn cmd_get_timeline(
 async fn cmd_get_people(
     state: State<'_, AppState>,
 ) -> Result<Vec<PersonGroup>, String> {
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_people(db).await.map_err(|e| e.to_string())
+    let db_guard   = state.db.lock().await;
+    let db         = db_guard.as_ref().ok_or("DB not initialized")?;
+    let source_dir = state.source_dir.lock().await.clone();
+    DbOperations::get_people(db, &source_dir).await.map_err(|e| e.to_string())
 }
 
 /// Name a face cluster.
@@ -233,9 +462,10 @@ async fn cmd_name_person(
 async fn cmd_get_duplicates(
     state: State<'_, AppState>,
 ) -> Result<Vec<DuplicateGroup>, String> {
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_duplicates(db).await.map_err(|e| e.to_string())
+    let db_guard   = state.db.lock().await;
+    let db         = db_guard.as_ref().ok_or("DB not initialized")?;
+    let source_dir = state.source_dir.lock().await.clone();
+    DbOperations::get_duplicates(db, &source_dir).await.map_err(|e| e.to_string())
 }
 
 /// Get search history.
@@ -262,7 +492,6 @@ async fn cmd_set_db_config(
     *state.surreal_addr.lock().await = addr;
     *state.surreal_user.lock().await = user;
     *state.surreal_pass.lock().await = pass;
-    // Reset connection so next cmd_init will reconnect
     *state.db.lock().await = None;
     Ok(())
 }
@@ -296,17 +525,19 @@ async fn cmd_get_distinct_objects(
 #[tauri::command]
 async fn cmd_get_status(state: State<'_, AppState>) -> Result<serde_json::Value, String> {
     let engine_ready = state.engine.lock().await.is_some();
-    let db_ready = state.db.lock().await.is_some();
+    let db_ready     = state.db.lock().await.is_some();
     let vector_count = {
         let db_guard = state.db.lock().await;
         if let Some(ref sdb) = *db_guard {
             DbOperations::embedding_count(sdb).await.unwrap_or(0)
         } else { 0 }
     };
+    let source_dir = state.source_dir.lock().await.clone();
     Ok(serde_json::json!({
         "engine_ready": engine_ready,
         "db_ready": db_ready,
         "vector_count": vector_count,
+        "source_dir": source_dir,
     }))
 }
 
@@ -318,17 +549,18 @@ async fn run_search(
     image_path: Option<String>,
     state: &State<'_, AppState>,
 ) -> Result<Vec<SearchResult>, String> {
+    let source_dir = state.source_dir.lock().await.clone();
+
     let db_guard = state.db.lock().await;
     let db = db_guard.as_ref().ok_or("DB not initialized. Call cmd_init first.")?;
 
     let mut engine_guard = state.engine.lock().await;
     let engine = engine_guard.as_mut().ok_or("Engine not initialized. Call cmd_init first.")?;
 
-    let results = SearchPipeline::run(&query, engine, db)
+    let results = SearchPipeline::run(&query, engine, db, &source_dir)
         .await
         .map_err(|e| e.to_string())?;
 
-    // Save search history
     let _ = DbOperations::save_search_history(db, text, image_path, None).await;
 
     Ok(results)
@@ -343,7 +575,13 @@ pub fn run() {
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             cmd_init,
+            cmd_get_source_dir,
+            cmd_set_source_dir,
+            cmd_get_sync_status,
+            cmd_auto_scan,
             cmd_scan_folder,
+            cmd_ingest_files,
+            cmd_ingest_image_data,
             cmd_search_text,
             cmd_search_image,
             cmd_search_combined,
@@ -367,17 +605,13 @@ pub fn run() {
 fn main() -> Result<()> {
     Logger::init("log/auraseek.log");
 
-    // Nếu muốn test việc sinh ra ảnh vẽ bbbox (vẽ khung nhận diện lỗi), log, json vector, cropped faces 
-    // Thì đổi giá trị này thành true:
-    let run_cli_debug_ingest = false; 
+    let run_cli_debug_ingest = false;
 
     if run_cli_debug_ingest {
-        // Chạy thư mục input được cấu hình sẵn rồi tự sinh output, tắt app React
         debug_cli::run_debug_ingest("input", "output")?;
         return Ok(());
     }
 
-    // Nếu fasle, chạy React Tauri App bình thường
     run();
     Ok(())
 }

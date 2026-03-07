@@ -1,7 +1,8 @@
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import {
   Search, Filter, Moon, Sun, X, Share2, Plus, Trash2,
-  History, Image as ImageIcon, Upload, AlertCircle, MousePointerClick
+  History, Image as ImageIcon, Upload, AlertCircle, MousePointerClick,
+  RefreshCw, CheckCircle2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "../theme-provider";
@@ -9,7 +10,7 @@ import { useSelection } from "@/contexts/SelectionContext";
 import { FilterPanel } from "@/components/common/FilterPanel";
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { ActiveFilters } from "@/App";
-import { AuraSeekApi } from "@/lib/api";
+import { AuraSeekApi, type SyncStatus } from "@/lib/api";
 
 interface AppTopbarProps {
   totalImages?: number;
@@ -24,6 +25,7 @@ interface AppTopbarProps {
   initError?: string | null;
   selectionMode?: boolean;
   onSelectionModeChange?: (mode: boolean) => void;
+  syncStatus?: SyncStatus | null;
 }
 
 export function AppTopbar({
@@ -39,6 +41,7 @@ export function AppTopbar({
   initError,
   selectionMode = false,
   onSelectionModeChange,
+  syncStatus,
 }: AppTopbarProps) {
   const { theme, setTheme } = useTheme();
   const { selectedIds, clearSelection } = useSelection();
@@ -266,6 +269,25 @@ export function AppTopbar({
       </div>
 
       <div className="flex items-center gap-3 shrink-0 mr-2 text-sm text-muted-foreground">
+        {/* Sync status indicator */}
+        {syncStatus && syncStatus.state === "syncing" && (
+          <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-full bg-indigo-500/10 border border-indigo-500/20 text-indigo-500 text-xs animate-pulse">
+            <RefreshCw className="w-3 h-3 animate-spin" />
+            <span>Đang đồng bộ dữ liệu</span>
+          </div>
+        )}
+        {syncStatus && syncStatus.state === "done" && (
+          <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 dark:text-emerald-400 text-xs">
+            <CheckCircle2 className="w-3 h-3" />
+            <span>Đã đồng bộ</span>
+          </div>
+        )}
+        {syncStatus && syncStatus.state === "error" && (
+          <div className="hidden sm:flex items-center gap-1.5 px-2 py-1 rounded-full bg-red-500/10 border border-red-500/20 text-red-500 text-xs" title={syncStatus.message}>
+            <AlertCircle className="w-3 h-3" />
+            <span>Lỗi đồng bộ</span>
+          </div>
+        )}
         <span className="hidden sm:inline-block font-medium">{totalImages > 0 ? `${totalImages} Ảnh & Video` : ""}</span>
         <Button
           variant="ghost"

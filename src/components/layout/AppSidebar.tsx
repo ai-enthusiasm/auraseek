@@ -33,7 +33,17 @@ const collections = [
 ];
 
 
-export function AppSidebar({ activeKey = "timeline", onNavClick }: { activeKey?: string, onNavClick?: (key: string) => void }) {
+export function AppSidebar({
+  activeKey = "timeline",
+  onNavClick,
+  sourceDir = "",
+  onSourceDirChange,
+}: {
+  activeKey?: string;
+  onNavClick?: (key: string) => void;
+  sourceDir?: string;
+  onSourceDirChange?: (dir: string) => void;
+}) {
   const [showSettings, setShowSettings] = useState(false);
 
   return (
@@ -110,7 +120,12 @@ export function AppSidebar({ activeKey = "timeline", onNavClick }: { activeKey?:
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarFooter>
-      <SettingsModal open={showSettings} onOpenChange={setShowSettings} />
+      <SettingsModal
+        open={showSettings}
+        onOpenChange={setShowSettings}
+        currentSourceDir={sourceDir}
+        onSourceDirChange={onSourceDirChange}
+      />
     </Sidebar>
   );
 }

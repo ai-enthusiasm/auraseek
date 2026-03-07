@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -13,6 +13,8 @@ export interface DetectedObject {
     class_name: string;
     conf: number;
     bbox: BboxInfo;
+    /** RLE mask: each [offset, length] means pixels at row-major indices [offset..offset+length) are set */
+    mask_rle?: [number, number][];
 }
 
 export interface DetectedFace {
@@ -31,11 +33,16 @@ export interface SearchResultMeta {
 }
 
 export interface SearchResult {
-    media_id: string;
-    similarity_score: number;
-    file_path: string;
-    media_type: string;
-    metadata: SearchResultMeta;
+    media_id:          string;
+    similarity_score:  number;
+    file_path:         string;
+    media_type:        string;
+    metadata:          SearchResultMeta;
+    /** Full detection data for hover overlays */
+    detected_objects:  DetectedObject[];
+    detected_faces:    DetectedFace[];
+    width:             number | null;
+    height:            number | null;
 }
 
 export interface TimelineItem {
@@ -101,6 +108,14 @@ export interface AppStatus {
     engine_ready: boolean;
     db_ready: boolean;
     vector_count: number;
+    source_dir?: string;
+}
+
+export interface SyncStatus {
+    state: "idle" | "syncing" | "done" | "error";
+    processed: number;
+    total: number;
+    message: string;
 }
 
 // ─── API ─────────────────────────────────────────────────────────────────────
@@ -173,10 +188,42 @@ export const AuraSeekApi = {
     async setDbConfig(addr: string, user: string, pass: string): Promise<void> {
         return invoke<void>("cmd_set_db_config", { addr, user, pass });
     },
+
+    async getSourceDir(): Promise<string> {
+        return invoke<string>("cmd_get_source_dir");
+    },
+
+    async setSourceDir(dir: string): Promise<void> {
+        return invoke<void>("cmd_set_source_dir", { dir });
+    },
+
+    async getSyncStatus(): Promise<SyncStatus> {
+        return invoke<SyncStatus>("cmd_get_sync_status");
+    },
+
+    async autoScan(): Promise<string> {
+        return invoke<string>("cmd_auto_scan");
+    },
+
+    async ingestFiles(filePaths: string[]): Promise<IngestSummary> {
+        return invoke<IngestSummary>("cmd_ingest_files", { filePaths });
+    },
+
+    /** Send raw image bytes (base64) to backend — used for clipboard paste without a file path */
+    async ingestImageData(data: string, ext: string): Promise<IngestSummary> {
+        return invoke<IngestSummary>("cmd_ingest_image_data", { data, ext });
+    },
 };
 
 export function localFileUrl(filePath: string): string {
     if (!filePath) return "";
-    const encoded = encodeURIComponent(filePath).replace(/%2F/g, "/").replace(/%5C/g, "/");
-    return `asset://localhost/${encoded}`;
+    // Use Tauri's convertFileSrc which correctly handles path encoding and
+    // sets up the asset:// URL with proper streaming support for video.
+    try {
+        return convertFileSrc(filePath);
+    } catch {
+        // Fallback for non-Tauri environments (browser dev)
+        const encoded = encodeURIComponent(filePath).replace(/%2F/g, "/").replace(/%5C/g, "/");
+        return `asset://localhost/${encoded}`;
+    }
 }

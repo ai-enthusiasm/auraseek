@@ -19,6 +19,39 @@ fn strip_table_prefix(id: &str) -> &str {
     id.find(':').map(|i| &id[i+1..]).unwrap_or(id)
 }
 
+/// Build a `SearchResult` from a `MediaRow`, deriving the file path from source_dir.
+pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> SearchResult {
+    let id_str  = record_id_to_string(&row.id);
+    let base    = source_dir.trim_end_matches('/');
+    SearchResult {
+        media_id:         id_str,
+        similarity_score: score,
+        file_path:        format!("{}/{}", base, row.file.name),
+        media_type:       row.media_type.clone(),
+        width:            row.metadata.width,
+        height:           row.metadata.height,
+        detected_objects: row.objects.iter().map(|o| DetectedObject {
+            class_name: o.class_name.clone(),
+            conf:       o.conf,
+            bbox:       BboxInfo { x: o.bbox.x, y: o.bbox.y, w: o.bbox.w, h: o.bbox.h },
+            mask_rle:   o.mask_rle.clone(),
+        }).collect(),
+        detected_faces: row.faces.iter().map(|f| DetectedFace {
+            face_id: f.face_id.clone(),
+            name:    f.name.clone(),
+            conf:    f.conf,
+            bbox:    BboxInfo { x: f.bbox.x, y: f.bbox.y, w: f.bbox.w, h: f.bbox.h },
+        }).collect(),
+        metadata: SearchResultMeta {
+            width:      row.metadata.width,
+            height:     row.metadata.height,
+            created_at: row.metadata.created_at.as_ref().map(|dt| dt.to_string()),
+            objects:    row.objects.iter().map(|o| o.class_name.clone()).collect(),
+            faces:      row.faces.iter().filter_map(|f| f.name.clone()).collect(),
+        },
+    }
+}
+
 pub struct DbOperations;
 
 impl DbOperations {
@@ -205,9 +238,33 @@ impl DbOperations {
         Ok(rows.first().map(|r| r.favorite).unwrap_or(false))
     }
 
+    // ─── Config (source_dir) ─────────────────────────────────────────
+
+    /// Get the configured source directory (always stored as `config_auraseek:main`).
+    pub async fn get_source_dir(db: &SurrealDb) -> Result<Option<String>> {
+        let mut res = db.db.query("SELECT source_dir FROM config_auraseek:main").await?;
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct Row { source_dir: Option<String> }
+        let rows: Vec<Row> = res.take(0)?;
+        Ok(rows.into_iter().next().and_then(|r| r.source_dir))
+    }
+
+    /// Upsert the source directory into a single config record `config_auraseek:main`.
+    pub async fn set_source_dir(db: &SurrealDb, source_dir: &str) -> Result<()> {
+        let dir = source_dir.to_string();
+        db.db.query(
+            "UPSERT config_auraseek:main SET source_dir = $dir, updated_at = time::now()"
+        )
+        .bind(("dir", dir))
+        .await?
+        .check()
+        .map_err(|e| anyhow::anyhow!("set_source_dir failed: {}", e))?;
+        Ok(())
+    }
+
     // ─── Timeline ────────────────────────────────────────────────────
 
-    pub async fn get_timeline(db: &SurrealDb, limit: usize) -> Result<Vec<TimelineGroup>> {
+    pub async fn get_timeline(db: &SurrealDb, limit: usize, source_dir: &str) -> Result<Vec<TimelineGroup>> {
         let mut res = db.db.query(
             "SELECT * FROM media ORDER BY metadata.created_at DESC LIMIT $lim"
         )
@@ -220,9 +277,10 @@ impl DbOperations {
         for row in rows {
             let (year, month) = parse_ym(&row.metadata.created_at);
             let label = format_month_label(year, month);
+            let file_path = format!("{}/{}", source_dir.trim_end_matches('/'), row.file.name);
             let item = TimelineItem {
                 media_id:   record_id_to_string(&row.id),
-                file_path:  row.file.path.clone(),
+                file_path,
                 media_type: row.media_type.clone(),
                 width:      row.metadata.width,
                 height:     row.metadata.height,
@@ -235,6 +293,7 @@ impl DbOperations {
                     class_name: o.class_name.clone(),
                     conf: o.conf,
                     bbox: BboxInfo { x: o.bbox.x, y: o.bbox.y, w: o.bbox.w, h: o.bbox.h },
+                    mask_rle: o.mask_rle.clone(),
                 }).collect(),
                 detected_faces: row.faces.iter().map(|f| DetectedFace {
                     face_id: f.face_id.clone(),
@@ -258,13 +317,12 @@ impl DbOperations {
     pub async fn resolve_search_results(
         db: &SurrealDb,
         hits: Vec<(String, f32)>,
+        source_dir: &str,
     ) -> Result<Vec<SearchResult>> {
         if hits.is_empty() { return Ok(vec![]); }
 
-        // Deduplicate by media_id (keep highest score)
         let mut score_map: HashMap<String, f32> = HashMap::new();
         for (mid, score) in &hits {
-            // media_id from embedding is like "media:xxx", extract raw id
             let raw = mid.strip_prefix("media:").unwrap_or(mid);
             let entry = score_map.entry(raw.to_string()).or_insert(0.0);
             if *score > *entry { *entry = *score; }
@@ -279,21 +337,9 @@ impl DbOperations {
 
         let mut results: Vec<SearchResult> = rows.into_iter().filter_map(|row| {
             let id_str = record_id_to_string(&row.id);
-            let raw = id_str.strip_prefix("media:").unwrap_or(&id_str);
-            let score = *score_map.get(raw)?;
-            Some(SearchResult {
-                media_id: id_str.clone(),
-                similarity_score: score,
-                file_path: row.file.path.clone(),
-                media_type: row.media_type.clone(),
-                metadata: SearchResultMeta {
-                    width: row.metadata.width,
-                    height: row.metadata.height,
-                    created_at: row.metadata.created_at.as_ref().map(|dt| dt.to_string()),
-                    objects: row.objects.iter().map(|o| o.class_name.clone()).collect(),
-                    faces: row.faces.iter().filter_map(|f| f.name.clone()).collect(),
-                },
-            })
+            let raw    = id_str.strip_prefix("media:").unwrap_or(&id_str);
+            let score  = *score_map.get(raw)?;
+            Some(row_to_search_result(&row, score, source_dir))
         }).collect();
 
         results.sort_by(|a, b| b.similarity_score.partial_cmp(&a.similarity_score).unwrap_or(std::cmp::Ordering::Equal));
@@ -398,7 +444,7 @@ impl DbOperations {
 
     // ─── People ──────────────────────────────────────────────────────
 
-    pub async fn get_people(db: &SurrealDb) -> Result<Vec<PersonGroup>> {
+    pub async fn get_people(db: &SurrealDb, source_dir: &str) -> Result<Vec<PersonGroup>> {
         let mut res = db.db.query(
             "SELECT
                 face_id,
@@ -407,7 +453,7 @@ impl DbOperations {
                 conf,
                 face_bbox,
                 (SELECT count() FROM media WHERE faces.*.face_id CONTAINS $parent.face_id GROUP ALL)[0].count AS photo_count,
-                (SELECT file.path FROM media WHERE faces.*.face_id CONTAINS $parent.face_id LIMIT 1)[0].file.path AS cover_path
+                (SELECT file.name FROM media WHERE faces.*.face_id CONTAINS $parent.face_id LIMIT 1)[0].file.name AS cover_name
             FROM person
             ORDER BY photo_count DESC"
         ).await?;
@@ -420,23 +466,32 @@ impl DbOperations {
             conf: Option<f32>,
             face_bbox: Option<crate::db::models::Bbox>,
             photo_count: Option<u64>,
-            cover_path: Option<String>,
+            cover_name: Option<String>,
         }
         let rows: Vec<PRow> = res.take(0)?;
-        Ok(rows.into_iter().map(|r| PersonGroup {
-            face_id: r.face_id,
-            name: r.name,
-            photo_count: r.photo_count.unwrap_or(0) as u32,
-            cover_path: r.cover_path,
-            thumbnail: r.thumbnail,
-            conf: r.conf,
-            face_bbox: r.face_bbox.map(|b| crate::db::models::BboxInfo { x: b.x, y: b.y, w: b.w, h: b.h }),
+        let base = source_dir.trim_end_matches('/');
+        Ok(rows.into_iter().map(|r| {
+            let cover_path = r.cover_name.as_ref().map(|n| format!("{}/{}", base, n));
+            // thumbnail may be stored as full path (legacy) or just filename; try to normalise
+            let thumbnail = r.thumbnail.map(|t| {
+                if std::path::Path::new(&t).is_absolute() { t }
+                else { format!("{}/{}", base, t) }
+            });
+            PersonGroup {
+                face_id: r.face_id,
+                name: r.name,
+                photo_count: r.photo_count.unwrap_or(0) as u32,
+                cover_path,
+                thumbnail,
+                conf: r.conf,
+                face_bbox: r.face_bbox.map(|b| crate::db::models::BboxInfo { x: b.x, y: b.y, w: b.w, h: b.h }),
+            }
         }).collect())
     }
 
     // ─── Duplicates ──────────────────────────────────────────────────
 
-    pub async fn get_duplicates(db: &SurrealDb) -> Result<Vec<DuplicateGroup>> {
+    pub async fn get_duplicates(db: &SurrealDb, source_dir: &str) -> Result<Vec<DuplicateGroup>> {
         let mut res = db.db.query(
             "SELECT file.sha256 AS sha256, array::group(id) AS ids, count() AS cnt
             FROM media
@@ -450,20 +505,21 @@ impl DbOperations {
             ids: Vec<RecordId>,
         }
         let rows: Vec<DupRow> = res.take(0)?;
+        let base = source_dir.trim_end_matches('/');
 
         let mut groups = vec![];
         for row in rows {
             let ids_str = row.ids.iter().map(|id: &RecordId| record_id_to_string(id)).collect::<Vec<_>>().join(", ");
-            let query = format!("SELECT id, file.path, file.size FROM media WHERE id IN [{}]", ids_str);
+            let query = format!("SELECT id, file.name, file.size FROM media WHERE id IN [{}]", ids_str);
             let mut r2 = db.db.query(&query).await?;
             #[derive(serde::Deserialize, SurrealValue)]
-            struct DI { id: RecordId, path: Option<String>, size: Option<u64> }
+            struct DI { id: RecordId, name: Option<String>, size: Option<u64> }
             let items: Vec<DI> = r2.take(0)?;
             groups.push(DuplicateGroup {
                 sha256: row.sha256,
                 items: items.into_iter().map(|i| DuplicateItem {
                     media_id: record_id_to_string(&i.id),
-                    file_path: i.path.unwrap_or_default(),
+                    file_path: i.name.map(|n| format!("{}/{}", base, n)).unwrap_or_default(),
                     size: i.size.unwrap_or(0),
                 }).collect(),
             });

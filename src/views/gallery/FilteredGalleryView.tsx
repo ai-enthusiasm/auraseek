@@ -66,7 +66,13 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
                 ) : (
                     <div className="mb-8">
                         <div className="text-sm font-medium mb-4 text-muted-foreground">{filteredPhotos.length} ảnh và video</div>
-                        <PhotoGrid photos={filteredPhotos} onPhotoClick={setSelectedPhoto} showBbox={filterType !== "person"} />
+                        <PhotoGrid
+                            photos={filteredPhotos}
+                            onPhotoClick={setSelectedPhoto}
+                            showBbox={filterType !== "person"}
+                            overlayShowFaces={filterType !== "album"}
+                            overlayShowLabels={filterType !== "album"}
+                        />
                     </div>
                 )}
             </div>

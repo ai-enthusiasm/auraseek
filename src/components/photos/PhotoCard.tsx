@@ -1,23 +1,52 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import type { Photo } from "@/types/photo.type";
 import { cn } from "@/lib/utils";
 import { useSelection } from "@/contexts/SelectionContext";
-import { Heart, CheckCircle2, Circle } from "lucide-react";
+import { Heart, CheckCircle2, Circle, Play } from "lucide-react";
 import { AuraSeekApi } from "@/lib/api";
+import { SegmentOverlay } from "./SegmentOverlay";
 
 type PhotoCardProps = {
   photo: Photo;
   onClick?: () => void;
   selectionMode?: boolean;
   showBbox?: boolean;
+  overlayShowFaces?: boolean;
+  overlayShowLabels?: boolean;
 };
 
-export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = true }: PhotoCardProps) {
+export function PhotoCard({
+  photo,
+  onClick,
+  selectionMode     = false,
+  showBbox          = true,
+  overlayShowFaces  = true,
+  overlayShowLabels = true,
+}: PhotoCardProps) {
   const { selectedIds, toggleSelection } = useSelection();
-  const isSelected = selectedIds.has(photo.id);
+  const isSelected   = selectedIds.has(photo.id);
   const [isFavorite, setIsFavorite] = useState(photo.favorite ?? false);
-  const [hovered, setHovered] = useState(false);
+  const [hovered,    setHovered]    = useState(false);
+
+  const isVideo = photo.type === "video";
+
+  // Ref for the image element (used by SegmentOverlay for dimensions)
   const imgRef = useRef<HTMLImageElement>(null);
+
+  // Track rendered dimensions for the overlay
+  const [displayW, setDisplayW] = useState(0);
+  const [displayH, setDisplayH] = useState(0);
+
+  useEffect(() => {
+    const el = imgRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => {
+      setDisplayW(el.clientWidth);
+      setDisplayH(el.clientHeight);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
 
   const handleSelect = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -26,18 +55,23 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
 
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const newState = !isFavorite;
-    setIsFavorite(newState);
+    const next = !isFavorite;
+    setIsFavorite(next);
     try {
       await AuraSeekApi.toggleFavorite(photo.id);
     } catch {
-      setIsFavorite(!newState);
+      setIsFavorite(!next);
     }
   };
 
   const hasOverlays =
-    (photo.detectedObjects && photo.detectedObjects.length > 0) ||
-    (photo.detectedFaces && photo.detectedFaces.length > 0);
+    !isVideo && (
+      (photo.detectedObjects && photo.detectedObjects.length > 0) ||
+      (photo.detectedFaces   && photo.detectedFaces.length   > 0)
+    );
+
+  const imgNaturalW = photo.width  || imgRef.current?.naturalWidth  || 0;
+  const imgNaturalH = photo.height || imgRef.current?.naturalHeight || 0;
 
   return (
     <button
@@ -51,31 +85,66 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
         "w-full h-full transition-all duration-200 ease-out relative",
         isSelected && selectionMode ? "p-3" : "p-0"
       )}>
-        <img
-          ref={imgRef}
-          src={photo.url}
-          alt="Photo"
-          className={cn(
-            "h-full w-full select-none object-cover transition-transform duration-500 ease-out",
-            !(isSelected && selectionMode) && "group-hover:scale-[1.03]",
-            isSelected && selectionMode && "rounded-lg"
-          )}
-          draggable={false}
-        />
 
-        {/* Bbox overlays on hover */}
-        {showBbox && hovered && hasOverlays && (
-          <BboxOverlay
-            photo={photo}
-            imgRef={imgRef}
+        {/* ── Video — show static thumbnail image in grid ──────── */}
+        {isVideo ? (
+          <img
+            ref={imgRef}
+            src={photo.thumbnailUrl || photo.url}
+            alt="Video"
+            className={cn(
+              "h-full w-full select-none object-cover transition-transform duration-500 ease-out",
+              !(isSelected && selectionMode) && "group-hover:scale-[1.03]",
+              isSelected && selectionMode && "rounded-lg"
+            )}
+            draggable={false}
+          />
+        ) : (
+          /* ── Image ──────────────────────────────────────────── */
+          <img
+            ref={imgRef}
+            src={photo.url}
+            alt="Photo"
+            className={cn(
+              "h-full w-full select-none object-cover transition-transform duration-500 ease-out",
+              !(isSelected && selectionMode) && "group-hover:scale-[1.03]",
+              isSelected && selectionMode && "rounded-lg"
+            )}
+            draggable={false}
           />
         )}
 
+        {/* ── Segmentation overlay (images only) ───────────────── */}
+        {showBbox && hovered && hasOverlays && displayW > 0 && imgNaturalW > 0 && (
+          <div className="absolute inset-0 pointer-events-none z-[5]">
+            <SegmentOverlay
+              detectedObjects={photo.detectedObjects}
+              detectedFaces={photo.detectedFaces}
+              imgNaturalW={imgNaturalW}
+              imgNaturalH={imgNaturalH}
+              displayW={displayW}
+              displayH={displayH}
+              objectFit="cover"
+              showFaces={overlayShowFaces}
+              showLabels={overlayShowLabels}
+            />
+          </div>
+        )}
+
+        {/* ── Video play badge ──────────────────────────────────── */}
+        {isVideo && !hovered && (
+          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+            <Play className="w-2.5 h-2.5 fill-white" />
+            <span>VIDEO</span>
+          </div>
+        )}
+
         {isSelected && selectionMode && (
-          <div className="pointer-events-none absolute inset-0 bg-black/20 opacity-100 rounded-lg m-3" />
+          <div className="pointer-events-none absolute inset-0 bg-black/20 rounded-lg m-3" />
         )}
       </div>
 
+      {/* ── Selection checkbox ────────────────────────────────── */}
       {selectionMode && (
         <div
           role="button"
@@ -93,6 +162,7 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
         </div>
       )}
 
+      {/* ── Favourite heart ───────────────────────────────────── */}
       <div
         role="button"
         onClick={handleFavorite}
@@ -103,105 +173,13 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
             : "opacity-0 group-hover:opacity-100 hover:scale-110"
         )}
       >
-        <Heart
-          className={cn(
-            "w-5 h-5 transition-colors drop-shadow-md",
-            isFavorite ? "fill-red-500 text-red-500" : "fill-black/30 text-white/90 hover:fill-red-500 hover:text-red-500"
-          )}
-        />
+        <Heart className={cn(
+          "w-5 h-5 transition-colors drop-shadow-md",
+          isFavorite
+            ? "fill-red-500 text-red-500"
+            : "fill-black/30 text-white/90 hover:fill-red-500 hover:text-red-500"
+        )} />
       </div>
     </button>
-  );
-}
-
-function BboxOverlay({
-  photo,
-  imgRef,
-}: {
-  photo: Photo;
-  imgRef: React.RefObject<HTMLImageElement | null>;
-}) {
-  const img = imgRef.current;
-  if (!img) return null;
-
-  const imgW = photo.width || img.naturalWidth || 1;
-  const imgH = photo.height || img.naturalHeight || 1;
-
-  const displayW = img.clientWidth;
-  const displayH = img.clientHeight;
-
-  const imgAspect = imgW / imgH;
-  const displayAspect = displayW / displayH;
-
-  let scaleX: number, scaleY: number, offsetX: number, offsetY: number;
-
-  if (imgAspect > displayAspect) {
-    const fitH = displayW / imgAspect;
-    scaleX = displayW / imgW;
-    scaleY = fitH / imgH;
-    offsetX = 0;
-    offsetY = (displayH - fitH) / 2;
-  } else {
-    const fitW = displayH * imgAspect;
-    scaleX = fitW / imgW;
-    scaleY = displayH / imgH;
-    offsetX = (displayW - fitW) / 2;
-    offsetY = 0;
-  }
-
-  // object-cover crops to fill the container
-  const coverScale = Math.max(displayW / imgW, displayH / imgH);
-  const renderedW = imgW * coverScale;
-  const renderedH = imgH * coverScale;
-  const cropX = (renderedW - displayW) / 2;
-  const cropY = (renderedH - displayH) / 2;
-
-  scaleX = coverScale;
-  scaleY = coverScale;
-  offsetX = -cropX;
-  offsetY = -cropY;
-
-  const boxes: React.ReactNode[] = [];
-
-  photo.detectedObjects?.forEach((obj, i) => {
-    const left = obj.bbox.x * scaleX + offsetX;
-    const top = obj.bbox.y * scaleY + offsetY;
-    const w = obj.bbox.w * scaleX;
-    const h = obj.bbox.h * scaleY;
-    boxes.push(
-      <div
-        key={`obj-${i}`}
-        className="absolute pointer-events-none"
-        style={{ left, top, width: w, height: h, border: "2px solid #22d3ee", borderRadius: 4 }}
-      >
-        <span className="absolute -top-5 left-0 text-[10px] bg-cyan-500/80 text-white px-1 rounded whitespace-nowrap">
-          {obj.class_name} {(obj.conf * 100).toFixed(0)}%
-        </span>
-      </div>
-    );
-  });
-
-  photo.detectedFaces?.forEach((face, i) => {
-    const left = face.bbox.x * scaleX + offsetX;
-    const top = face.bbox.y * scaleY + offsetY;
-    const w = face.bbox.w * scaleX;
-    const h = face.bbox.h * scaleY;
-    boxes.push(
-      <div
-        key={`face-${i}`}
-        className="absolute pointer-events-none"
-        style={{ left, top, width: w, height: h, border: "2px solid #a78bfa", borderRadius: 4 }}
-      >
-        <span className="absolute -top-5 left-0 text-[10px] bg-violet-500/80 text-white px-1 rounded whitespace-nowrap">
-          {face.name || "Face"} {(face.conf * 100).toFixed(0)}%
-        </span>
-      </div>
-    );
-  });
-
-  return (
-    <div className="absolute inset-0 pointer-events-none z-[5]">
-      {boxes}
-    </div>
   );
 }

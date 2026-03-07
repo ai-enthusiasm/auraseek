@@ -1,12 +1,11 @@
 /// Search pipeline orchestration – SurrealDB edition
-/// Runs different search modes and returns unified SearchResult
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 use crate::processor::AuraSeekEngine;
 use crate::db::SurrealDb;
-use crate::db::operations::{DbOperations, record_id_to_string};
+use crate::db::operations::{DbOperations, row_to_search_result};
 use crate::db::models::SearchResult;
 use crate::search::text_search::{encode_text_query, search_by_text_embedding};
 use crate::search::image_search::{encode_image_query, search_by_image_embedding};
@@ -44,11 +43,11 @@ pub struct SearchQuery {
 pub struct SearchPipeline;
 
 impl SearchPipeline {
-    /// Run the search pipeline (no more in-memory vector store needed).
     pub async fn run(
         query: &SearchQuery,
         engine: &mut AuraSeekEngine,
         db: &SurrealDb,
+        source_dir: &str,
     ) -> Result<Vec<SearchResult>> {
         let raw_hits = match query.mode {
             SearchMode::Text => {
@@ -67,13 +66,11 @@ impl SearchPipeline {
                 let text = query.text.as_deref().unwrap_or("");
                 let path = query.image_path.as_deref().unwrap_or("");
 
-                let text_emb = encode_text_query(engine, text)?;
-                let img_emb  = encode_image_query(engine, path)?;
-
+                let text_emb  = encode_text_query(engine, text)?;
+                let img_emb   = encode_image_query(engine, path)?;
                 let text_hits = search_by_text_embedding(db, &text_emb, DEFAULT_THRESHOLD, DEFAULT_LIMIT).await?;
                 let img_hits  = search_by_image_embedding(db, &img_emb, DEFAULT_THRESHOLD, DEFAULT_LIMIT).await?;
 
-                // Intersect and average scores
                 let text_map: HashMap<String, f32> = text_hits.into_iter().collect();
                 let mut combined = vec![];
                 for (mid, img_score) in img_hits {
@@ -87,26 +84,16 @@ impl SearchPipeline {
 
             SearchMode::ObjectFilter => {
                 let class = query.filters.object.clone().unwrap_or_default();
+                crate::log_info!("🔍 ObjectFilter: class_name='{}'", class);
                 let mut res = db.db.query(
                     "SELECT * FROM media WHERE objects.*.class_name CONTAINS $cls ORDER BY metadata.created_at DESC LIMIT 100"
                 )
                 .bind(("cls", class))
                 .await?;
                 let rows: Vec<crate::db::models::MediaRow> = res.take(0)?;
-                let results: Vec<SearchResult> = rows.into_iter().map(|row| SearchResult {
-                    media_id: record_id_to_string(&row.id),
-                    similarity_score: 1.0,
-                    file_path: row.file.path,
-                    media_type: row.media_type,
-                    metadata: crate::db::models::SearchResultMeta {
-                        width: row.metadata.width,
-                        height: row.metadata.height,
-                        created_at: row.metadata.created_at.as_ref().map(|dt| dt.to_string()),
-                        objects: row.objects.iter().map(|o| o.class_name.clone()).collect(),
-                        faces: row.faces.iter().filter_map(|f| f.name.clone()).collect(),
-                    },
-                }).collect();
-                // Still apply remaining filters (year, month, media_type)
+                let results: Vec<SearchResult> = rows.iter()
+                    .map(|row| row_to_search_result(row, 1.0, source_dir))
+                    .collect();
                 return DbOperations::apply_filters(
                     db, results, None, None,
                     query.filters.month, query.filters.year,
@@ -116,25 +103,16 @@ impl SearchPipeline {
 
             SearchMode::FaceFilter => {
                 let name = query.filters.face.clone().unwrap_or_default();
+                crate::log_info!("🔍 FaceFilter: name='{}'", name);
                 let mut res = db.db.query(
                     "SELECT * FROM media WHERE faces.*.name CONTAINS $name ORDER BY metadata.created_at DESC LIMIT 100"
                 )
                 .bind(("name", name))
                 .await?;
                 let rows: Vec<crate::db::models::MediaRow> = res.take(0)?;
-                let results: Vec<SearchResult> = rows.into_iter().map(|row| SearchResult {
-                    media_id: record_id_to_string(&row.id),
-                    similarity_score: 1.0,
-                    file_path: row.file.path,
-                    media_type: row.media_type,
-                    metadata: crate::db::models::SearchResultMeta {
-                        width: row.metadata.width,
-                        height: row.metadata.height,
-                        created_at: row.metadata.created_at.as_ref().map(|dt| dt.to_string()),
-                        objects: row.objects.iter().map(|o| o.class_name.clone()).collect(),
-                        faces: row.faces.iter().filter_map(|f| f.name.clone()).collect(),
-                    },
-                }).collect();
+                let results: Vec<SearchResult> = rows.iter()
+                    .map(|row| row_to_search_result(row, 1.0, source_dir))
+                    .collect();
                 return DbOperations::apply_filters(
                     db, results, None, None,
                     query.filters.month, query.filters.year,
@@ -143,23 +121,14 @@ impl SearchPipeline {
             }
 
             SearchMode::FilterOnly => {
+                crate::log_info!("🔍 FilterOnly: {:?}", query.filters);
                 let mut res = db.db.query(
                     "SELECT * FROM media ORDER BY metadata.created_at DESC LIMIT 200"
                 ).await?;
                 let rows: Vec<crate::db::models::MediaRow> = res.take(0)?;
-                let results: Vec<SearchResult> = rows.into_iter().map(|row| SearchResult {
-                    media_id: record_id_to_string(&row.id),
-                    similarity_score: 1.0,
-                    file_path: row.file.path,
-                    media_type: row.media_type,
-                    metadata: crate::db::models::SearchResultMeta {
-                        width: row.metadata.width,
-                        height: row.metadata.height,
-                        created_at: row.metadata.created_at.as_ref().map(|dt| dt.to_string()),
-                        objects: row.objects.iter().map(|o| o.class_name.clone()).collect(),
-                        faces: row.faces.iter().filter_map(|f| f.name.clone()).collect(),
-                    },
-                }).collect();
+                let results: Vec<SearchResult> = rows.iter()
+                    .map(|row| row_to_search_result(row, 1.0, source_dir))
+                    .collect();
                 return DbOperations::apply_filters(
                     db, results,
                     query.filters.object.as_deref(),
@@ -170,10 +139,8 @@ impl SearchPipeline {
             }
         };
 
-        // Resolve vector hits to full SearchResult
-        let mut results = DbOperations::resolve_search_results(db, raw_hits).await?;
+        let mut results = DbOperations::resolve_search_results(db, raw_hits, source_dir).await?;
 
-        // Apply post-filters
         results = DbOperations::apply_filters(
             db, results,
             query.filters.object.as_deref(),

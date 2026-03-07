@@ -4,9 +4,15 @@ use surrealdb::types::{RecordId, SurrealValue, Datetime as SurrealDatetime};
 
 // ────────────────────── Core document types ──────────────────────
 
+/// App-level config stored in `config_auraseek` table (singleton record).
+#[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
+pub struct AppConfig {
+    pub source_dir: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct FileInfo {
-    pub path:   String,
+    /// Filename only (no directory). Full path = config_auraseek.source_dir + "/" + name
     pub name:   String,
     pub size:   u64,
     pub sha256: String,
@@ -57,11 +63,12 @@ pub struct FaceEntry {
     pub bbox:    Bbox,
 }
 
-/// Document stored in `media` table (for .content())
+/// Document stored in `media` table (for .content()).
+/// `source` is NOT stored here — it lives in `config_auraseek`.
+/// Full file path is derived as: source_dir + "/" + file.name
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct MediaDoc {
     pub media_type: String,
-    pub source:     String,
     pub file:       FileInfo,
     pub metadata:   MediaMetadata,
     pub objects:    Vec<ObjectEntry>,
@@ -74,7 +81,6 @@ pub struct MediaDoc {
 pub struct MediaRow {
     pub id:         RecordId,
     pub media_type: String,
-    pub source:     String,
     pub file:       FileInfo,
     pub metadata:   MediaMetadata,
     pub objects:    Vec<ObjectEntry>,
@@ -169,6 +175,9 @@ pub struct DetectedObject {
     pub class_name: String,
     pub conf:       f32,
     pub bbox:       BboxInfo,
+    /// RLE mask: each [offset, length] for pixels set to 1 (row-major, width × height grid).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask_rle:   Option<Vec<[u32; 2]>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -181,11 +190,16 @@ pub struct DetectedFace {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
-    pub media_id:         String,
-    pub similarity_score: f32,
-    pub file_path:        String,
-    pub media_type:       String,
-    pub metadata:         SearchResultMeta,
+    pub media_id:          String,
+    pub similarity_score:  f32,
+    pub file_path:         String,
+    pub media_type:        String,
+    pub metadata:          SearchResultMeta,
+    /// Full detection data (bbox + mask_rle) for hover overlays
+    pub detected_objects:  Vec<DetectedObject>,
+    pub detected_faces:    Vec<DetectedFace>,
+    pub width:             Option<u32>,
+    pub height:            Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -209,6 +223,7 @@ pub struct TimelineGroup {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimelineItem {
     pub media_id:          String,
+    /// Full absolute path derived from source_dir + "/" + file.name at query time
     pub file_path:         String,
     pub media_type:        String,
     pub width:             Option<u32>,

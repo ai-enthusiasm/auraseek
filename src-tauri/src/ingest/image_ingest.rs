@@ -10,6 +10,7 @@ use sha2::{Sha256, Digest};
 use crate::db::{SurrealDb, DbOperations};
 use crate::db::models::{MediaDoc, FileInfo, MediaMetadata, ObjectEntry, FaceEntry, Bbox, PersonDoc};
 use crate::processor::AuraSeekEngine;
+use crate::ingest::video_ingest;
 
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "avif"];
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
@@ -27,9 +28,24 @@ pub async fn ingest_folder(
         return Err(anyhow::anyhow!("Source directory not found: {}", source_dir));
     }
 
-    let (image_files, _video_files) = collect_files(source_path);
-    let total = image_files.len();
-    crate::log_info!("📂 Ingest started: {} | {} images found", source_dir, total);
+    // Persist source_dir to config_auraseek table
+    {
+        let db_guard = db.lock().await;
+        if let Some(ref sdb) = *db_guard {
+            if let Err(e) = DbOperations::set_source_dir(sdb, &source_dir).await {
+                crate::log_warn!("⚠️ Failed to persist source_dir to config: {}", e);
+            } else {
+                crate::log_info!("📝 source_dir saved to config_auraseek: {}", source_dir);
+            }
+        }
+    }
+
+    let (image_files, video_files) = collect_files(source_path);
+    let total = image_files.len() + video_files.len();
+    crate::log_info!(
+        "📂 Ingest started: {} | {} images + {} videos found",
+        source_dir, image_files.len(), video_files.len()
+    );
 
     let mut summary = IngestSummary {
         total_found: total,
@@ -38,12 +54,13 @@ pub async fn ingest_folder(
         errors: 0,
     };
 
-    let (tx, mut rx) = mpsc::channel::<(PathBuf, String)>(64);
+    // Channel carries (original_path, media_id, is_video)
+    let (tx, mut rx) = mpsc::channel::<(PathBuf, String, bool)>(64);
 
     let db_scan = db.clone();
     let source_dir_clone = source_dir.clone();
 
-    // Thread 1: file scan + insert media stubs
+    // Thread 1: file scan + insert media stubs (images then videos)
     let scan_task = tokio::spawn(async move {
         let mut newly_added = 0usize;
         let mut skipped = 0usize;
@@ -53,7 +70,7 @@ pub async fn ingest_folder(
             match scan_single_file(&path, &db_scan, &source_dir_clone, "image").await {
                 Ok(Some(media_id)) => {
                     newly_added += 1;
-                    let _ = tx.send((path, media_id)).await;
+                    let _ = tx.send((path, media_id, false)).await;
                 }
                 Ok(None) => { skipped += 1; }
                 Err(e) => {
@@ -62,61 +79,95 @@ pub async fn ingest_folder(
                 }
             }
         }
+
+        for path in video_files {
+            match scan_single_file(&path, &db_scan, &source_dir_clone, "video").await {
+                Ok(Some(media_id)) => {
+                    newly_added += 1;
+                    let _ = tx.send((path, media_id, true)).await;
+                }
+                Ok(None) => { skipped += 1; }
+                Err(e) => {
+                    crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
+                    errors += 1;
+                }
+            }
+        }
+
         (newly_added, skipped, errors)
     });
 
     // Thread 2: AI processing + embedding
     let mut ai_processed = 0usize;
-    while let Some((path, media_id)) = rx.recv().await {
+    while let Some((path, media_id, is_video)) = rx.recv().await {
         let path_str = path.to_string_lossy().to_string();
-        let mut eng_guard = engine.lock().await;
-        let eng = match eng_guard.as_mut() {
-            Some(e) => e,
-            None => { drop(eng_guard); continue; }
-        };
+        let file_name_only = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
 
-        match eng.process_image(&path_str) {
-            Ok(output) => {
-                let objects: Vec<ObjectEntry> = output.objects.iter().map(|o| ObjectEntry {
-                    class_name: o.class_name.clone(),
-                    conf: o.conf,
-                    bbox: Bbox {
-                        x: o.bbox[0], y: o.bbox[1],
-                        w: o.bbox[2] - o.bbox[0],
-                        h: o.bbox[3] - o.bbox[1],
-                    },
-                    mask_area: Some(o.mask_area),
-                    mask_path: None,
-                    mask_rle: Some(o.mask_rle.iter().map(|&(a, b)| [a, b]).collect()),
-                }).collect();
+        crate::log_info!("🤖 [AI {}/{}] Processing: {}", ai_processed + 1, total, file_name_only);
+        let t0 = std::time::Instant::now();
 
-                let faces: Vec<FaceEntry> = output.faces.iter().map(|f| FaceEntry {
-                    face_id: f.face_id.clone(),
-                    name: f.name.clone(),
-                    conf: f.conf,
-                    bbox: Bbox {
-                        x: f.bbox[0], y: f.bbox[1],
-                        w: f.bbox[2] - f.bbox[0],
-                        h: f.bbox[3] - f.bbox[1],
-                    },
-                }).collect();
+        if is_video {
+            // ── Full video pipeline: scene detection → AI → embeddings ───────
+            match video_ingest::process_video(&path_str, &media_id, &db, &engine).await {
+                Ok(Some(thumb)) => crate::log_info!("🎥 Video done, thumbnail: {}", thumb),
+                Ok(None)        => crate::log_info!("🎥 Video done (no thumbnail)"),
+                Err(e)          => crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name_only, e),
+            }
+        } else {
+            // ── Standard image pipeline ──────────────────────────────────────
+            let mut eng_guard = engine.lock().await;
+            let eng = match eng_guard.as_mut() {
+                Some(e) => e,
+                None => { drop(eng_guard); continue; }
+            };
 
-                let detected_faces: Vec<(String, f32, Bbox)> = faces.iter().map(|f| (
-                    f.face_id.clone(),
-                    f.conf,
-                    Bbox { x: f.bbox.x, y: f.bbox.y, w: f.bbox.w, h: f.bbox.h },
-                )).collect();
+            match eng.process_image(&path_str) {
+                Ok(output) => {
+                    crate::log_info!(
+                        "  ✅ Done in {}ms | objects={} faces={} embed_dims={}",
+                        t0.elapsed().as_millis(),
+                        output.objects.len(), output.faces.len(), output.vision_embedding.len()
+                    );
 
-                drop(eng_guard);
+                    let objects: Vec<ObjectEntry> = output.objects.iter().map(|o| ObjectEntry {
+                        class_name: o.class_name.clone(),
+                        conf: o.conf,
+                        bbox: Bbox {
+                            x: o.bbox[0], y: o.bbox[1],
+                            w: o.bbox[2] - o.bbox[0],
+                            h: o.bbox[3] - o.bbox[1],
+                        },
+                        mask_area: Some(o.mask_area),
+                        mask_path: None,
+                        mask_rle: Some(o.mask_rle.iter().map(|&(a, b)| [a, b]).collect()),
+                    }).collect();
 
-                // Update AI results in DB
-                {
+                    let faces: Vec<FaceEntry> = output.faces.iter().map(|f| FaceEntry {
+                        face_id: f.face_id.clone(),
+                        name: f.name.clone(),
+                        conf: f.conf,
+                        bbox: Bbox {
+                            x: f.bbox[0], y: f.bbox[1],
+                            w: f.bbox[2] - f.bbox[0],
+                            h: f.bbox[3] - f.bbox[1],
+                        },
+                    }).collect();
+
+                    let detected_faces: Vec<(String, f32, Bbox)> = faces.iter().map(|f| (
+                        f.face_id.clone(), f.conf,
+                        Bbox { x: f.bbox.x, y: f.bbox.y, w: f.bbox.w, h: f.bbox.h },
+                    )).collect();
+
+                    drop(eng_guard);
+
                     let db_guard = db.lock().await;
                     if let Some(ref sdb) = *db_guard {
                         if let Err(e) = DbOperations::update_media_ai(sdb, &media_id, objects, faces).await {
                             crate::log_warn!("⚠️ update_media_ai failed for {}: {}", media_id, e);
                         }
-
                         if !output.vision_embedding.is_empty() {
                             if let Err(e) = DbOperations::insert_embedding(
                                 sdb, &media_id, "image", None, None, output.vision_embedding.clone()
@@ -124,12 +175,12 @@ pub async fn ingest_folder(
                                 crate::log_warn!("⚠️ insert_embedding failed for {}: {}", media_id, e);
                             }
                         }
-
                         for (fid, conf, bbox) in &detected_faces {
+                            crate::log_info!("  👤 Upserting person face_id={} conf={:.3}", fid, conf);
                             if let Err(e) = DbOperations::upsert_person(sdb, PersonDoc {
                                 face_id: fid.clone(),
                                 name: None,
-                                thumbnail: Some(path_str.clone()),
+                                thumbnail: Some(file_name_only.clone()),
                                 conf: Some(*conf),
                                 face_bbox: Some(bbox.clone()),
                             }).await {
@@ -138,14 +189,14 @@ pub async fn ingest_folder(
                         }
                     }
                 }
-
-                ai_processed += 1;
-            }
-            Err(e) => {
-                drop(eng_guard);
-                crate::log_warn!("🤖 AI error for {}: {}", path_str, e);
+                Err(e) => {
+                    drop(eng_guard);
+                    crate::log_warn!("🤖 AI error for {} ({}ms): {}", file_name_only, t0.elapsed().as_millis(), e);
+                }
             }
         }
+
+        ai_processed += 1;
 
         if let Some(ref ptx) = progress_tx {
             let _ = ptx.send(IngestProgress {
@@ -164,7 +215,7 @@ pub async fn ingest_folder(
     summary.skipped_dup = skipped;
     summary.errors = errors;
 
-    crate::log_info!("✅ Ingest complete: {} new, {} skipped, {} errors, {} AI processed",
+    crate::log_info!("✅ Ingest complete: {} new, {} skipped, {} errors, {} AI processed (images+videos)",
         newly_added, skipped, errors, ai_processed);
 
     Ok(summary)
@@ -193,7 +244,7 @@ async fn scan_single_file(
         .and_then(|n| n.to_str())
         .unwrap_or("")
         .to_string();
-    let path_str = path.to_string_lossy().to_string();
+    let path_str = path.to_string_lossy().to_string(); // used for image dimension reading only
 
     let (width, height) = if media_type == "image" {
         get_image_dimensions(&path_str)
@@ -207,9 +258,7 @@ async fn scan_single_file(
 
     let doc = MediaDoc {
         media_type: media_type.to_string(),
-        source: source_dir.to_string(),
         file: FileInfo {
-            path: path_str,
             name,
             size,
             sha256,
@@ -234,6 +283,7 @@ async fn scan_single_file(
     Ok(Some(media_id))
 }
 
+
 fn collect_files(dir: &Path) -> (Vec<PathBuf>, Vec<PathBuf>) {
     let mut images = vec![];
     let mut videos = vec![];
@@ -252,7 +302,8 @@ fn collect_files_recursive(dir: &Path, images: &mut Vec<PathBuf>, videos: &mut V
                 .and_then(|e| e.to_str())
                 .unwrap_or("")
                 .to_lowercase();
-            if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+            let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if IMAGE_EXTENSIONS.contains(&ext.as_str()) && !fname.ends_with(".thumb.jpg") {
                 images.push(path);
             } else if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
                 videos.push(path);
@@ -277,6 +328,129 @@ fn get_image_dimensions(path: &str) -> (Option<u32>, Option<u32>) {
         }
     }
     (None, None)
+}
+
+/// Ingest a specific list of image files (for copy/paste or drag-drop).
+/// Files are copied to `dest_dir` (source_dir) then processed.
+pub async fn ingest_files(
+    file_paths: Vec<String>,
+    dest_dir: String,
+    db: Arc<Mutex<Option<SurrealDb>>>,
+    engine: Arc<Mutex<Option<AuraSeekEngine>>>,
+) -> Result<IngestSummary> {
+    let dest_path = Path::new(&dest_dir);
+    if !dest_path.exists() {
+        return Err(anyhow::anyhow!("Destination directory not found: {}", dest_dir));
+    }
+
+    let mut summary = IngestSummary {
+        total_found: file_paths.len(),
+        newly_added: 0,
+        skipped_dup: 0,
+        errors: 0,
+    };
+
+    for src_path_str in &file_paths {
+        let src = Path::new(src_path_str);
+        let file_name = match src.file_name().and_then(|n| n.to_str()) {
+            Some(n) => n.to_string(),
+            None => { summary.errors += 1; continue; }
+        };
+
+        let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let is_video = VIDEO_EXTENSIONS.contains(&ext.as_str());
+        let is_image = IMAGE_EXTENSIONS.contains(&ext.as_str());
+        if !is_image && !is_video {
+            crate::log_warn!("⚠️ Skipping unsupported file: {}", file_name);
+            summary.skipped_dup += 1;
+            continue;
+        }
+        let media_type = if is_video { "video" } else { "image" };
+
+        // Copy to dest_dir — skip if the file is already there (e.g. pasted via clipboard save)
+        let dest = dest_path.join(&file_name);
+        if src.canonicalize().ok() != dest.canonicalize().ok() {
+            if let Err(e) = std::fs::copy(src, &dest) {
+                crate::log_warn!("⚠️ Failed to copy {} -> {}: {}", src_path_str, dest.display(), e);
+                summary.errors += 1;
+                continue;
+            }
+        }
+
+        // Ingest the copied/moved file
+        match scan_single_file(&dest, &db, &dest_dir, media_type).await {
+            Ok(Some(media_id)) => {
+                crate::log_info!("📎 Copied+ingested: {} ({}) as {}", file_name, media_id, media_type);
+                summary.newly_added += 1;
+
+                let dest_str = dest.to_string_lossy().to_string();
+                let t0 = std::time::Instant::now();
+
+                if is_video {
+                    // ── Full video pipeline ─────────────────────────────────
+                    if let Err(e) = video_ingest::process_video(&dest_str, &media_id, &db, &engine).await {
+                        crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name, e);
+                    }
+                } else {
+                    // ── Standard image pipeline ─────────────────────────────
+                    let mut eng_guard = engine.lock().await;
+                    if let Some(ref mut eng) = *eng_guard {
+                        match eng.process_image(&dest_str) {
+                            Ok(output) => {
+                                crate::log_info!(
+                                    "  ✅ AI done in {}ms | objects={} faces={}",
+                                    t0.elapsed().as_millis(), output.objects.len(), output.faces.len()
+                                );
+                                let objects: Vec<ObjectEntry> = output.objects.iter().map(|o| ObjectEntry {
+                                    class_name: o.class_name.clone(), conf: o.conf,
+                                    bbox: Bbox { x: o.bbox[0], y: o.bbox[1], w: o.bbox[2]-o.bbox[0], h: o.bbox[3]-o.bbox[1] },
+                                    mask_area: Some(o.mask_area), mask_path: None,
+                                    mask_rle: Some(o.mask_rle.iter().map(|&(a,b)| [a,b]).collect()),
+                                }).collect();
+                                let faces: Vec<FaceEntry> = output.faces.iter().map(|f| FaceEntry {
+                                    face_id: f.face_id.clone(), name: f.name.clone(), conf: f.conf,
+                                    bbox: Bbox { x: f.bbox[0], y: f.bbox[1], w: f.bbox[2]-f.bbox[0], h: f.bbox[3]-f.bbox[1] },
+                                }).collect();
+                                let detected_faces: Vec<(String, f32, Bbox)> = faces.iter().map(|f| (
+                                    f.face_id.clone(), f.conf,
+                                    Bbox { x: f.bbox.x, y: f.bbox.y, w: f.bbox.w, h: f.bbox.h },
+                                )).collect();
+                                drop(eng_guard);
+
+                                let db_guard = db.lock().await;
+                                if let Some(ref sdb) = *db_guard {
+                                    let _ = DbOperations::update_media_ai(sdb, &media_id, objects, faces).await;
+                                    if !output.vision_embedding.is_empty() {
+                                        let _ = DbOperations::insert_embedding(sdb, &media_id, "image", None, None, output.vision_embedding).await;
+                                    }
+                                    for (fid, conf, bbox) in &detected_faces {
+                                        let _ = DbOperations::upsert_person(sdb, PersonDoc {
+                                            face_id: fid.clone(), name: None,
+                                            thumbnail: Some(file_name.clone()),
+                                            conf: Some(*conf), face_bbox: Some(bbox.clone()),
+                                        }).await;
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                drop(eng_guard);
+                                crate::log_warn!("🤖 AI error for {}: {}", file_name, e);
+                            }
+                        }
+                    } else {
+                        drop(eng_guard);
+                    }
+                }
+            }
+            Ok(None) => { summary.skipped_dup += 1; }
+            Err(e) => {
+                crate::log_warn!("⚠️ Error ingesting {}: {}", file_name, e);
+                summary.errors += 1;
+            }
+        }
+    }
+
+    Ok(summary)
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────

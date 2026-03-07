@@ -14,11 +14,9 @@ pub struct SurrealDb {
 }
 
 impl SurrealDb {
-    /// Connect to a SurrealDB instance with timeout.
     pub async fn connect(addr: &str, user: &str, pass: &str) -> Result<Self> {
         crate::log_info!("🔌 Connecting to SurrealDB at ws://{}...", addr);
 
-        // Connect with timeout
         let db = tokio::time::timeout(
             Duration::from_secs(CONNECT_TIMEOUT_SECS),
             Surreal::new::<Ws>(addr)
@@ -29,7 +27,6 @@ impl SurrealDb {
 
         crate::log_info!("🔑 Authenticating as user '{}'...", user);
 
-        // Auth with timeout
         tokio::time::timeout(
             Duration::from_secs(5),
             db.signin(Root {
@@ -49,19 +46,28 @@ impl SurrealDb {
 
         let s = Self { db };
         s.ensure_schema().await?;
-        crate::log_info!("📋 SurrealDB schema verified (media, embedding, person, search_history)");
+        crate::log_info!("📋 Schema ready: media, embedding, person, config_auraseek, search_history");
         Ok(s)
     }
 
-    /// Create tables + indexes (idempotent via DEFINE ... IF NOT EXISTS)
     async fn ensure_schema(&self) -> Result<()> {
         self.db.query("
-            -- Media table
+            -- Migration: remove legacy fields no longer stored in media
+            REMOVE FIELD IF EXISTS file.path ON media;
+            REMOVE FIELD IF EXISTS source ON media;
+        ").await
+        .context("Failed to run schema migrations")?;
+
+        self.db.query("
+            -- App config table (source folder path, etc.)
+            DEFINE TABLE IF NOT EXISTS config_auraseek SCHEMAFULL;
+            DEFINE FIELD IF NOT EXISTS source_dir   ON config_auraseek TYPE string;
+            DEFINE FIELD IF NOT EXISTS updated_at   ON config_auraseek TYPE datetime DEFAULT time::now();
+
+            -- Media table (path is derived at runtime as source_dir + '/' + file.name)
             DEFINE TABLE IF NOT EXISTS media SCHEMAFULL;
             DEFINE FIELD IF NOT EXISTS media_type   ON media TYPE string;
-            DEFINE FIELD IF NOT EXISTS source       ON media TYPE string;
             DEFINE FIELD IF NOT EXISTS file         ON media TYPE object;
-            DEFINE FIELD IF NOT EXISTS file.path    ON media TYPE string;
             DEFINE FIELD IF NOT EXISTS file.name    ON media TYPE string;
             DEFINE FIELD IF NOT EXISTS file.size    ON media TYPE int;
             DEFINE FIELD IF NOT EXISTS file.sha256  ON media TYPE string;

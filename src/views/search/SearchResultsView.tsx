@@ -1,8 +1,9 @@
-import { useState } from "react";
-import { ArrowLeft, Sparkles, SortAsc } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { ArrowLeft, Sparkles, SortAsc, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { SearchResult } from "@/lib/api";
 import { localFileUrl } from "@/lib/api";
+import { SegmentOverlay } from "@/components/photos/SegmentOverlay";
 
 interface SearchResultsViewProps {
     results: SearchResult[];
@@ -30,7 +31,6 @@ export function SearchResultsView({ results, query, isLoading, onBack }: SearchR
 
     return (
         <div className="flex flex-col h-full w-full">
-
             {/* Header */}
             <div className="h-14 flex items-center px-4 shrink-0 bg-background/95 backdrop-blur z-20 border-b border-border/10 sticky top-0">
                 <Button
@@ -90,39 +90,88 @@ function SearchResultCard({
     isSelected: boolean;
     onClick: () => void;
 }) {
+    const isVideo = result.media_type === "video";
     const [imgError, setImgError] = useState(false);
+    const [hovered,  setHovered]  = useState(false);
+    const imgRef   = useRef<HTMLImageElement>(null);
+    const [displayW, setDisplayW] = useState(0);
+    const [displayH, setDisplayH] = useState(0);
+
+    useEffect(() => {
+        const el = imgRef.current;
+        if (!el) return;
+        const ro = new ResizeObserver(() => {
+            setDisplayW(el.clientWidth);
+            setDisplayH(el.clientHeight);
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+
+    const hasOverlays =
+        !isVideo && (
+            (result.detected_objects && result.detected_objects.length > 0) ||
+            (result.detected_faces   && result.detected_faces.length   > 0)
+        );
+
+    const imgNaturalW = result.width  || imgRef.current?.naturalWidth  || 0;
+    const imgNaturalH = result.height || imgRef.current?.naturalHeight || 0;
+    // For videos show the static thumbnail (stem + .thumb.jpg)
+    const src = isVideo
+        ? localFileUrl(result.file_path.replace(/\.[^.]+$/, ".thumb.jpg"))
+        : localFileUrl(result.file_path);
 
     return (
         <div
             onClick={onClick}
-            className={`relative group cursor-pointer rounded-xl overflow-hidden aspect-square transition-all duration-200 ${isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "hover:scale-[1.02]"
-                }`}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+            className={`relative group cursor-pointer rounded-xl overflow-hidden aspect-square transition-all duration-200 ${
+                isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "hover:scale-[1.02]"
+            }`}
         >
-            {/* Image */}
             {imgError ? (
                 <div className="w-full h-full bg-muted flex items-center justify-center">
-                    <span className="text-xs text-muted-foreground text-center px-2 truncate">{result.file_path.split(/[/\\]/).pop()}</span>
+                    <span className="text-xs text-muted-foreground text-center px-2 truncate">
+                        {result.file_path.split(/[/\\]/).pop()}
+                    </span>
                 </div>
             ) : (
                 <img
-                    src={localFileUrl(result.file_path)}
+                    ref={imgRef}
+                    src={src}
                     alt={result.file_path}
                     className="w-full h-full object-cover"
                     onError={() => setImgError(true)}
                 />
             )}
 
-            {/* Overlay on hover */}
-            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all duration-200" />
 
-            {/* Video indicator */}
-            {result.media_type === "video" && (
-                <div className="absolute bottom-2 right-2 bg-black/70 text-white text-[10px] px-1.5 py-0.5 rounded-full">
-                    VIDEO
-                </div>
+            {/* Segmentation overlay on hover — no face bbox or labels in search results */}
+            {hovered && hasOverlays && displayW > 0 && imgNaturalW > 0 && (
+                <SegmentOverlay
+                    detectedObjects={result.detected_objects}
+                    detectedFaces={result.detected_faces}
+                    imgNaturalW={imgNaturalW}
+                    imgNaturalH={imgNaturalH}
+                    displayW={displayW}
+                    displayH={displayH}
+                    objectFit="cover"
+                    showFaces={false}
+                    showLabels={false}
+                />
             )}
 
+            {/* Dim overlay */}
+            <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-all duration-200 pointer-events-none" />
 
+            {/* Video badge */}
+            {isVideo && !hovered && (
+                <div className="absolute bottom-2 right-2 flex items-center gap-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+                    <Play className="w-2.5 h-2.5 fill-white" />
+                    <span>VIDEO</span>
+                </div>
+            )}
         </div>
     );
 }
