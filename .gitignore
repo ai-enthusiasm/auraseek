@@ -27,3 +27,5 @@ assets
 *.njsproj
 *.sln
 *.sw?
+
+auraseek_data/*
