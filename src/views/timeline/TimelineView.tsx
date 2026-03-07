@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Photo } from "@/types/photo.type";
 import type { TimelineGroup } from "@/lib/api";
 import { PhotoGrid } from "@/components/photos/PhotoGrid";
+import { Calendar } from "lucide-react";
 import { FullScreenViewer } from "@/components/photo-detail/FullScreenViewer";
 import { localFileUrl } from "@/lib/api";
 
@@ -52,6 +53,9 @@ export function TimelineView({
             faces: item.faces,
             type: item.media_type === "video" ? "video" as const : "photo" as const,
             labels: item.objects,
+            favorite: item.favorite,
+            detectedObjects: item.detected_objects,
+            detectedFaces: item.detected_faces,
           })),
       })).filter(s => s.photos.length > 0);
     }
@@ -117,10 +121,11 @@ export function TimelineView({
 
         <div className="space-y-6 sm:space-y-8">
           {sections.map((section) => (
-            <section key={section.id} className="space-y-2 sm:space-y-3">
-              <div className="sticky top-3 z-10 mb-1 inline-flex rounded-full border border-white/10 bg-slate-900/70 px-3 py-1 text-xs font-medium text-slate-100 shadow-lg backdrop-blur dark:bg-slate-900/70 bg-slate-700/70">
+            <section key={section.id} className="space-y-4">
+              <div className="sticky top-4 z-10 mb-2 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/60 px-4 py-1.5 text-[13px] font-bold text-slate-100 shadow-2xl backdrop-blur-md">
+                <Calendar className="w-3.5 h-3.5 text-primary" />
                 {section.label}
-                <span className="ml-2 opacity-60">· {section.photos.length} ảnh</span>
+                <span className="text-[11px] font-medium text-slate-400">· {section.photos.length} mục</span>
               </div>
 
               <PhotoGrid

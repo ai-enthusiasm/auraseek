@@ -173,6 +173,40 @@ export const AuraSeekApi = {
     async setDbConfig(addr: string, user: string, pass: string): Promise<void> {
         return invoke<void>("cmd_set_db_config", { addr, user, pass });
     },
+
+    // ─── Trash & Hidden ──────────────────────────────────────────────────────
+
+    async moveToTrash(mediaId: string): Promise<void> {
+        return invoke<void>("cmd_move_to_trash", { mediaId });
+    },
+
+    async restoreFromTrash(mediaId: string): Promise<void> {
+        return invoke<void>("cmd_restore_from_trash", { mediaId });
+    },
+
+    async getTrash(): Promise<TimelineGroup[]> {
+        return invoke<TimelineGroup[]>("cmd_get_trash");
+    },
+
+    async emptyTrash(): Promise<void> {
+        return invoke<void>("cmd_empty_trash");
+    },
+
+    async hidePhoto(mediaId: string): Promise<void> {
+        return invoke<void>("cmd_hide_photo", { mediaId });
+    },
+
+    async unhidePhoto(mediaId: string): Promise<void> {
+        return invoke<void>("cmd_unhide_photo", { mediaId });
+    },
+
+    async getHiddenPhotos(): Promise<TimelineGroup[]> {
+        return invoke<TimelineGroup[]>("cmd_get_hidden_photos");
+    },
+
+    async authenticateOs(): Promise<boolean> {
+        return invoke<boolean>("cmd_authenticate_os");
+    },
 };
 
 export function localFileUrl(filePath: string): string {

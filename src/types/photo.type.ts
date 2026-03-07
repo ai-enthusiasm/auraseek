@@ -53,5 +53,6 @@ export type Photo = {
   detectedObjects?: DetectedObject[];
   detectedFaces?: DetectedFace[];
   type?: "photo" | "video";
+  filePath?: string;
 };
 

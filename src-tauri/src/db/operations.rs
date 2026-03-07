@@ -205,15 +205,90 @@ impl DbOperations {
         Ok(rows.first().map(|r| r.favorite).unwrap_or(false))
     }
 
+    // ─── Trash & Hidden ──────────────────────────────────────────────
+    
+    pub async fn move_to_trash(db: &SurrealDb, media_id: &str) -> Result<()> {
+        let query = format!("UPDATE {} SET deleted_at = time::now()", media_id);
+        db.db.query(&query).await?.check()
+            .map_err(|e| anyhow::anyhow!("move_to_trash failed: {}", e))?;
+        Ok(())
+    }
+
+    pub async fn restore_from_trash(db: &SurrealDb, media_id: &str) -> Result<()> {
+        let query = format!("UPDATE {} SET deleted_at = NONE", media_id);
+        db.db.query(&query).await?.check()
+            .map_err(|e| anyhow::anyhow!("restore_from_trash failed: {}", e))?;
+        Ok(())
+    }
+
+    pub async fn get_trash(db: &SurrealDb) -> Result<Vec<TimelineGroup>> {
+        let mut res = db.db.query(
+            "SELECT * FROM media WHERE type::is_none(deleted_at) = false ORDER BY deleted_at ASC"
+        ).await?;
+        let rows: Vec<MediaRow> = res.take(0)?;
+        Self::group_rows_into_timeline(rows)
+    }
+
+    pub async fn empty_trash(db: &SurrealDb) -> Result<()> {
+        // Fetch paths first to delete from disk
+        let mut res = db.db.query("SELECT file.path FROM media WHERE type::is_none(deleted_at) = false").await?;
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct PathRow { path: Option<String> }
+        let rows: Vec<PathRow> = res.take(0)?;
+        for r in rows.into_iter().filter_map(|r| r.path) {
+            let _ = std::fs::remove_file(&r); // best effort
+        }
+        db.db.query("DELETE media WHERE type::is_none(deleted_at) = false").await?.check()?;
+        Ok(())
+    }
+    
+    pub async fn auto_purge_trash(db: &SurrealDb) -> Result<()> {
+        let mut res = db.db.query("SELECT file.path FROM media WHERE type::is_none(deleted_at) = false AND deleted_at < time::now() - 30d").await?;
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct PathRow { path: Option<String> }
+        let rows: Vec<PathRow> = res.take(0)?;
+        for r in rows.into_iter().filter_map(|r| r.path) {
+            let _ = std::fs::remove_file(&r); // best effort
+        }
+        db.db.query("DELETE media WHERE type::is_none(deleted_at) = false AND deleted_at < time::now() - 30d").await?.check()?;
+        Ok(())
+    }
+
+    pub async fn hide_photo(db: &SurrealDb, media_id: &str) -> Result<()> {
+        let query = format!("UPDATE {} SET is_hidden = true", media_id);
+        db.db.query(&query).await?.check()
+            .map_err(|e| anyhow::anyhow!("hide_photo failed: {}", e))?;
+        Ok(())
+    }
+
+    pub async fn unhide_photo(db: &SurrealDb, media_id: &str) -> Result<()> {
+        let query = format!("UPDATE {} SET is_hidden = false", media_id);
+        db.db.query(&query).await?.check()
+            .map_err(|e| anyhow::anyhow!("unhide_photo failed: {}", e))?;
+        Ok(())
+    }
+
+    pub async fn get_hidden_photos(db: &SurrealDb) -> Result<Vec<TimelineGroup>> {
+        let mut res = db.db.query(
+            "SELECT * FROM media WHERE is_hidden = true AND deleted_at = NONE ORDER BY metadata.created_at DESC"
+        ).await?;
+        let rows: Vec<MediaRow> = res.take(0)?;
+        Self::group_rows_into_timeline(rows)
+    }
+
     // ─── Timeline ────────────────────────────────────────────────────
 
     pub async fn get_timeline(db: &SurrealDb, limit: usize) -> Result<Vec<TimelineGroup>> {
         let mut res = db.db.query(
-            "SELECT * FROM media ORDER BY metadata.created_at DESC LIMIT $lim"
+            "SELECT * FROM media WHERE deleted_at = NONE AND is_hidden = false ORDER BY metadata.created_at DESC LIMIT $lim"
         )
         .bind(("lim", limit))
         .await?;
         let rows: Vec<MediaRow> = res.take(0)?;
+        Self::group_rows_into_timeline(rows)
+    }
+
+    fn group_rows_into_timeline(rows: Vec<MediaRow>) -> Result<Vec<TimelineGroup>> {
 
         let mut groups: HashMap<(i32, u32), TimelineGroup> = HashMap::new();
 
@@ -231,6 +306,8 @@ impl DbOperations {
                 faces:      row.faces.iter().filter_map(|f| f.name.clone()).collect(),
                 face_ids:   row.faces.iter().map(|f| f.face_id.clone()).collect(),
                 favorite:   row.favorite,
+                deleted_at: row.deleted_at.as_ref().map(|dt| dt.to_string()),
+                is_hidden:  row.is_hidden,
                 detected_objects: row.objects.iter().map(|o| DetectedObject {
                     class_name: o.class_name.clone(),
                     conf: o.conf,
@@ -272,7 +349,7 @@ impl DbOperations {
 
         let ids: Vec<String> = score_map.keys().cloned().collect();
         let ids_str = ids.iter().map(|id| format!("media:{}", id)).collect::<Vec<_>>().join(", ");
-        let query = format!("SELECT * FROM media WHERE id IN [{}]", ids_str);
+        let query = format!("SELECT * FROM media WHERE id IN [{}] AND deleted_at = NONE AND is_hidden = false", ids_str);
 
         let mut res = db.db.query(&query).await?;
         let rows: Vec<MediaRow> = res.take(0)?;
@@ -385,7 +462,7 @@ impl DbOperations {
 
     pub async fn get_distinct_objects(db: &SurrealDb) -> Result<Vec<String>> {
         let mut res = db.db.query(
-            "SELECT array::distinct(objects.*.class_name) AS names FROM media WHERE array::len(objects) > 0"
+            "SELECT array::distinct(objects.*.class_name) AS names FROM media WHERE array::len(objects) > 0 AND deleted_at = NONE AND is_hidden = false"
         ).await?;
         #[derive(serde::Deserialize, SurrealValue)]
         struct Row { names: Vec<String> }
@@ -406,8 +483,8 @@ impl DbOperations {
                 thumbnail,
                 conf,
                 face_bbox,
-                (SELECT count() FROM media WHERE faces.*.face_id CONTAINS $parent.face_id GROUP ALL)[0].count AS photo_count,
-                (SELECT file.path FROM media WHERE faces.*.face_id CONTAINS $parent.face_id LIMIT 1)[0].file.path AS cover_path
+                (SELECT count() FROM media WHERE faces.*.face_id CONTAINS $parent.face_id AND deleted_at = NONE AND is_hidden = false GROUP ALL)[0].count AS photo_count,
+                (SELECT file.path FROM media WHERE faces.*.face_id CONTAINS $parent.face_id AND deleted_at = NONE AND is_hidden = false LIMIT 1)[0].file.path AS cover_path
             FROM person
             ORDER BY photo_count DESC"
         ).await?;
@@ -440,6 +517,7 @@ impl DbOperations {
         let mut res = db.db.query(
             "SELECT file.sha256 AS sha256, array::group(id) AS ids, count() AS cnt
             FROM media
+            WHERE deleted_at = NONE AND is_hidden = false
             GROUP BY file.sha256
             HAVING cnt > 1"
         ).await?;
@@ -454,7 +532,7 @@ impl DbOperations {
         let mut groups = vec![];
         for row in rows {
             let ids_str = row.ids.iter().map(|id: &RecordId| record_id_to_string(id)).collect::<Vec<_>>().join(", ");
-            let query = format!("SELECT id, file.path, file.size FROM media WHERE id IN [{}]", ids_str);
+            let query = format!("SELECT id, file.path, file.size FROM media WHERE id IN [{}] AND deleted_at = NONE AND is_hidden = false", ids_str);
             let mut r2 = db.db.query(&query).await?;
             #[derive(serde::Deserialize, SurrealValue)]
             struct DI { id: RecordId, path: Option<String>, size: Option<u64> }

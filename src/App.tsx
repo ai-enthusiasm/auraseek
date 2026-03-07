@@ -8,6 +8,8 @@ import { TimelineView } from "@/views/timeline";
 import { PeopleView } from "@/views/people/PeopleView";
 import { DuplicatesView } from "@/views/duplicates/DuplicatesView";
 import { AlbumsView } from "@/views/albums/AlbumsView";
+import { TrashView } from "@/views/trash/TrashView";
+import { HiddenView } from "@/views/hidden/HiddenView";
 import { FilteredGalleryView } from "@/views/gallery/FilteredGalleryView";
 import { SearchResultsView } from "@/views/search/SearchResultsView";
 import { AuraSeekApi, localFileUrl, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters } from "@/lib/api";
@@ -98,6 +100,7 @@ function App() {
           favorite: item.favorite,
           detectedObjects: item.detected_objects,
           detectedFaces: item.detected_faces,
+          filePath: item.file_path,
         }))
       );
       setPhotos(allPhotos);
@@ -185,7 +188,26 @@ function App() {
   useEffect(() => {
     const handler = () => loadTimeline();
     window.addEventListener("refresh_photos", handler);
-    return () => window.removeEventListener("refresh_photos", handler);
+    
+    // Optimistic favorite handler for instant UI feedback
+    const favoriteHandler = (e: any) => {
+      const { id } = e.detail;
+      setPhotos(prev => prev.map(p => 
+        p.id === id ? { ...p, favorite: !p.favorite } : p
+      ));
+      setTimelineGroups(prev => prev.map(group => ({
+        ...group,
+        items: group.items.map(item => 
+          item.media_id === id ? { ...item, favorite: !item.favorite } : item
+        )
+      })));
+    };
+    window.addEventListener("photo_toggle_favorite", favoriteHandler);
+
+    return () => {
+      window.removeEventListener("refresh_photos", handler);
+      window.removeEventListener("photo_toggle_favorite", favoriteHandler);
+    };
   }, [loadTimeline]);
 
   // ── Render ────────────────────────────────────────────────────────
@@ -235,16 +257,10 @@ function App() {
             onBack={() => setRoute({ view: "timeline" })}
           />
         );
-      case "recent":
-        return (
-          <FilteredGalleryView
-            title="Tin mới"
-            subtitle="Trong vòng 7 ngày qua"
-            filterType="recent"
-            photos={photos}
-            onBack={() => setRoute({ view: "timeline" })}
-          />
-        );
+      case "trash":
+        return <TrashView />;
+      case "hidden":
+        return <HiddenView />;
       case "timeline":
       default:
         return (

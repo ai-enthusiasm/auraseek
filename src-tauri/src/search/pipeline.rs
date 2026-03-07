@@ -88,7 +88,7 @@ impl SearchPipeline {
             SearchMode::ObjectFilter => {
                 let class = query.filters.object.clone().unwrap_or_default();
                 let mut res = db.db.query(
-                    "SELECT * FROM media WHERE objects.*.class_name CONTAINS $cls ORDER BY metadata.created_at DESC LIMIT 100"
+                    "SELECT * FROM media WHERE objects.*.class_name CONTAINS $cls AND deleted_at = NONE AND is_hidden = false ORDER BY metadata.created_at DESC LIMIT 100"
                 )
                 .bind(("cls", class))
                 .await?;
@@ -117,7 +117,7 @@ impl SearchPipeline {
             SearchMode::FaceFilter => {
                 let name = query.filters.face.clone().unwrap_or_default();
                 let mut res = db.db.query(
-                    "SELECT * FROM media WHERE faces.*.name CONTAINS $name ORDER BY metadata.created_at DESC LIMIT 100"
+                    "SELECT * FROM media WHERE faces.*.name CONTAINS $name AND deleted_at = NONE AND is_hidden = false ORDER BY metadata.created_at DESC LIMIT 100"
                 )
                 .bind(("name", name))
                 .await?;
@@ -144,7 +144,7 @@ impl SearchPipeline {
 
             SearchMode::FilterOnly => {
                 let mut res = db.db.query(
-                    "SELECT * FROM media ORDER BY metadata.created_at DESC LIMIT 200"
+                    "SELECT * FROM media WHERE deleted_at = NONE AND is_hidden = false ORDER BY metadata.created_at DESC LIMIT 200"
                 ).await?;
                 let rows: Vec<crate::db::models::MediaRow> = res.take(0)?;
                 let results: Vec<SearchResult> = rows.into_iter().map(|row| SearchResult {

@@ -9,14 +9,12 @@ type PhotoCardProps = {
   photo: Photo;
   onClick?: () => void;
   selectionMode?: boolean;
-  showBbox?: boolean;
 };
 
-export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = true }: PhotoCardProps) {
+export function PhotoCard({ photo, onClick, selectionMode = false }: PhotoCardProps) {
   const { selectedIds, toggleSelection } = useSelection();
   const isSelected = selectedIds.has(photo.id);
   const [isFavorite, setIsFavorite] = useState(photo.favorite ?? false);
-  const [hovered, setHovered] = useState(false);
   const imgRef = useRef<HTMLImageElement>(null);
 
   const handleSelect = (e: React.MouseEvent) => {
@@ -28,23 +26,22 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
     e.stopPropagation();
     const newState = !isFavorite;
     setIsFavorite(newState);
+    // Dispatch event for optimistic update in parent
+    window.dispatchEvent(new CustomEvent("photo_toggle_favorite", { detail: { id: photo.id } }));
+    
     try {
       await AuraSeekApi.toggleFavorite(photo.id);
     } catch {
       setIsFavorite(!newState);
+      // Re-trigger global refresh on failure
+      window.dispatchEvent(new Event("refresh_photos"));
     }
   };
-
-  const hasOverlays =
-    (photo.detectedObjects && photo.detectedObjects.length > 0) ||
-    (photo.detectedFaces && photo.detectedFaces.length > 0);
 
   return (
     <button
       type="button"
       onClick={selectionMode ? handleSelect : onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
       className="group relative block aspect-[4/3] overflow-hidden bg-background"
     >
       <div className={cn(
@@ -62,14 +59,6 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
           )}
           draggable={false}
         />
-
-        {/* Bbox overlays on hover */}
-        {showBbox && hovered && hasOverlays && (
-          <BboxOverlay
-            photo={photo}
-            imgRef={imgRef}
-          />
-        )}
 
         {isSelected && selectionMode && (
           <div className="pointer-events-none absolute inset-0 bg-black/20 opacity-100 rounded-lg m-3" />
@@ -111,97 +100,5 @@ export function PhotoCard({ photo, onClick, selectionMode = false, showBbox = tr
         />
       </div>
     </button>
-  );
-}
-
-function BboxOverlay({
-  photo,
-  imgRef,
-}: {
-  photo: Photo;
-  imgRef: React.RefObject<HTMLImageElement | null>;
-}) {
-  const img = imgRef.current;
-  if (!img) return null;
-
-  const imgW = photo.width || img.naturalWidth || 1;
-  const imgH = photo.height || img.naturalHeight || 1;
-
-  const displayW = img.clientWidth;
-  const displayH = img.clientHeight;
-
-  const imgAspect = imgW / imgH;
-  const displayAspect = displayW / displayH;
-
-  let scaleX: number, scaleY: number, offsetX: number, offsetY: number;
-
-  if (imgAspect > displayAspect) {
-    const fitH = displayW / imgAspect;
-    scaleX = displayW / imgW;
-    scaleY = fitH / imgH;
-    offsetX = 0;
-    offsetY = (displayH - fitH) / 2;
-  } else {
-    const fitW = displayH * imgAspect;
-    scaleX = fitW / imgW;
-    scaleY = displayH / imgH;
-    offsetX = (displayW - fitW) / 2;
-    offsetY = 0;
-  }
-
-  // object-cover crops to fill the container
-  const coverScale = Math.max(displayW / imgW, displayH / imgH);
-  const renderedW = imgW * coverScale;
-  const renderedH = imgH * coverScale;
-  const cropX = (renderedW - displayW) / 2;
-  const cropY = (renderedH - displayH) / 2;
-
-  scaleX = coverScale;
-  scaleY = coverScale;
-  offsetX = -cropX;
-  offsetY = -cropY;
-
-  const boxes: React.ReactNode[] = [];
-
-  photo.detectedObjects?.forEach((obj, i) => {
-    const left = obj.bbox.x * scaleX + offsetX;
-    const top = obj.bbox.y * scaleY + offsetY;
-    const w = obj.bbox.w * scaleX;
-    const h = obj.bbox.h * scaleY;
-    boxes.push(
-      <div
-        key={`obj-${i}`}
-        className="absolute pointer-events-none"
-        style={{ left, top, width: w, height: h, border: "2px solid #22d3ee", borderRadius: 4 }}
-      >
-        <span className="absolute -top-5 left-0 text-[10px] bg-cyan-500/80 text-white px-1 rounded whitespace-nowrap">
-          {obj.class_name} {(obj.conf * 100).toFixed(0)}%
-        </span>
-      </div>
-    );
-  });
-
-  photo.detectedFaces?.forEach((face, i) => {
-    const left = face.bbox.x * scaleX + offsetX;
-    const top = face.bbox.y * scaleY + offsetY;
-    const w = face.bbox.w * scaleX;
-    const h = face.bbox.h * scaleY;
-    boxes.push(
-      <div
-        key={`face-${i}`}
-        className="absolute pointer-events-none"
-        style={{ left, top, width: w, height: h, border: "2px solid #a78bfa", borderRadius: 4 }}
-      >
-        <span className="absolute -top-5 left-0 text-[10px] bg-violet-500/80 text-white px-1 rounded whitespace-nowrap">
-          {face.name || "Face"} {(face.conf * 100).toFixed(0)}%
-        </span>
-      </div>
-    );
-  });
-
-  return (
-    <div className="absolute inset-0 pointer-events-none z-[5]">
-      {boxes}
-    </div>
   );
 }

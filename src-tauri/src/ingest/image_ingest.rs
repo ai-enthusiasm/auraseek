@@ -225,6 +225,8 @@ async fn scan_single_file(
         objects: vec![],
         faces: vec![],
         processed: false,
+        deleted_at: None,
+        is_hidden: false,
     };
 
     let db_guard = db.lock().await;
