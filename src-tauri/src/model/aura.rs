@@ -19,12 +19,14 @@ impl AuraModel {
     }
 
     /// encode text to embedding vector
-    #[allow(dead_code)]
+    ///
+    /// Accepts the full padded `input_ids` / `attention_mask` tensors (both
+    /// length `max_len`). The model uses `attention_mask` to ignore padding
+    /// positions, matching its training-time behaviour.
     pub fn encode_text(
         &mut self,
         input_ids:      Vec<i64>,
         attention_mask: Vec<i64>,
-        _seq_len:       usize, // Retained in signature for compatibility, but ignored
     ) -> Result<Vec<f32>> {
         let actual_len = input_ids.len();
         let ids_tensor  = Value::from_array((vec![1, actual_len], input_ids.into_boxed_slice()))?;

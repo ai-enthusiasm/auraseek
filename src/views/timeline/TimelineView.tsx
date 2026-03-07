@@ -132,6 +132,7 @@ export function TimelineView({
                 photos={section.photos}
                 onPhotoClick={(photo) => setSelectedPhoto(photo)}
                 selectionMode={selectionMode}
+                showBbox={false}
               />
             </section>
           ))}

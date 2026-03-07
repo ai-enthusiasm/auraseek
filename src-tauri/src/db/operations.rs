@@ -278,12 +278,12 @@ impl DbOperations {
         Ok(())
     }
 
-    pub async fn get_trash(db: &SurrealDb) -> Result<Vec<TimelineGroup>> {
+    pub async fn get_trash(db: &SurrealDb, source_dir: &str) -> Result<Vec<TimelineGroup>> {
         let mut res = db.db.query(
             "SELECT * FROM media WHERE type::is_none(deleted_at) = false ORDER BY deleted_at ASC"
         ).await?;
         let rows: Vec<MediaRow> = res.take(0)?;
-        Self::group_rows_into_timeline(rows)
+        Self::group_rows_into_timeline(rows, source_dir)
     }
 
     pub async fn empty_trash(db: &SurrealDb) -> Result<()> {
@@ -325,12 +325,12 @@ impl DbOperations {
         Ok(())
     }
 
-    pub async fn get_hidden_photos(db: &SurrealDb) -> Result<Vec<TimelineGroup>> {
+    pub async fn get_hidden_photos(db: &SurrealDb, source_dir: &str) -> Result<Vec<TimelineGroup>> {
         let mut res = db.db.query(
             "SELECT * FROM media WHERE is_hidden = true AND deleted_at = NONE ORDER BY metadata.created_at DESC"
         ).await?;
         let rows: Vec<MediaRow> = res.take(0)?;
-        Self::group_rows_into_timeline(rows)
+        Self::group_rows_into_timeline(rows, source_dir)
     }
 
     // ─── Timeline ────────────────────────────────────────────────────
@@ -342,10 +342,10 @@ impl DbOperations {
         .bind(("lim", limit))
         .await?;
         let rows: Vec<MediaRow> = res.take(0)?;
-        Self::group_rows_into_timeline(rows)
+        Self::group_rows_into_timeline(rows, source_dir)
     }
 
-    fn group_rows_into_timeline(rows: Vec<MediaRow>) -> Result<Vec<TimelineGroup>> {
+    fn group_rows_into_timeline(rows: Vec<MediaRow>, source_dir: &str) -> Result<Vec<TimelineGroup>> {
 
         let mut groups: HashMap<(i32, u32), TimelineGroup> = HashMap::new();
 

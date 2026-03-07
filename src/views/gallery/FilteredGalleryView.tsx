@@ -76,9 +76,7 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
                         <PhotoGrid
                             photos={filteredPhotos}
                             onPhotoClick={setSelectedPhoto}
-                            showBbox={filterType !== "person"}
-                            overlayShowFaces={filterType !== "album"}
-                            overlayShowLabels={filterType !== "album"}
+                            showBbox={false}
                         />
                     </div>
                 )}

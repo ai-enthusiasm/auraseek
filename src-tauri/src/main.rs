@@ -485,9 +485,10 @@ async fn cmd_restore_from_trash(media_id: String, state: State<'_, AppState>) ->
 
 #[tauri::command]
 async fn cmd_get_trash(state: State<'_, AppState>) -> Result<Vec<TimelineGroup>, String> {
-    let db_guard = state.db.lock().await;
+    let source_dir = state.source_dir.lock().await.clone();
+    let db_guard   = state.db.lock().await;
     let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_trash(db).await.map_err(|e| e.to_string())
+    DbOperations::get_trash(db, &source_dir).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -513,9 +514,10 @@ async fn cmd_unhide_photo(media_id: String, state: State<'_, AppState>) -> Resul
 
 #[tauri::command]
 async fn cmd_get_hidden_photos(state: State<'_, AppState>) -> Result<Vec<TimelineGroup>, String> {
-    let db_guard = state.db.lock().await;
+    let source_dir = state.source_dir.lock().await.clone();
+    let db_guard   = state.db.lock().await;
     let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_hidden_photos(db).await.map_err(|e| e.to_string())
+    DbOperations::get_hidden_photos(db, &source_dir).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
