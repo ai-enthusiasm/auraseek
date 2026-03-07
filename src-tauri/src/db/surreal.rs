@@ -9,6 +9,7 @@ const NS: &str = "auraseek";
 const DB_NAME: &str = "auraseek";
 const CONNECT_TIMEOUT_SECS: u64 = 10;
 
+#[derive(Clone)]
 pub struct SurrealDb {
     pub db: Surreal<Client>,
 }
@@ -103,8 +104,13 @@ impl SurrealDb {
             DEFINE FIELD IF NOT EXISTS faces.*.bbox.h     ON media TYPE float;
             DEFINE FIELD IF NOT EXISTS processed    ON media TYPE bool DEFAULT false;
             DEFINE FIELD IF NOT EXISTS favorite     ON media TYPE bool DEFAULT false;
+            DEFINE FIELD IF NOT EXISTS deleted_at   ON media TYPE option<datetime>;
+            DEFINE FIELD IF NOT EXISTS is_hidden    ON media TYPE bool DEFAULT false;
             DEFINE INDEX IF NOT EXISTS idx_sha256   ON media FIELDS file.sha256 UNIQUE;
             DEFINE INDEX IF NOT EXISTS idx_created  ON media FIELDS metadata.created_at;
+
+            -- Migration for existing records
+            UPDATE media SET deleted_at = NONE, is_hidden = false WHERE is_hidden = NONE;
 
             -- Embedding table with vector field
             DEFINE TABLE IF NOT EXISTS embedding SCHEMAFULL;

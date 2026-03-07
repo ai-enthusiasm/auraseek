@@ -111,7 +111,17 @@ async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
         let mut db_guard = state.db.lock().await;
         if db_guard.is_none() {
             match SurrealDb::connect(&addr, &user, &pass).await {
-                Ok(sdb) => { *db_guard = Some(sdb); }
+                Ok(sdb) => {
+                    // Start auto-purge trash worker in background
+                    let sdb_clone = sdb.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = DbOperations::auto_purge_trash(&sdb_clone).await {
+                            crate::log_warn!("Failed to auto-purge trash: {}", e);
+                        }
+                    });
+
+                    *db_guard = Some(sdb);
+                }
                 Err(e) => return Err(format!("SurrealDB connection failed: {}", e)),
             }
         }
@@ -457,6 +467,83 @@ async fn cmd_name_person(
     DbOperations::name_person(db, &face_id, &name).await.map_err(|e| e.to_string())
 }
 
+// ─── Trash & Hidden ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+async fn cmd_move_to_trash(media_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::move_to_trash(db, &media_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_restore_from_trash(media_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::restore_from_trash(db, &media_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_get_trash(state: State<'_, AppState>) -> Result<Vec<TimelineGroup>, String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::get_trash(db).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_empty_trash(state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::empty_trash(db).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_hide_photo(media_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::hide_photo(db, &media_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_unhide_photo(media_id: String, state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::unhide_photo(db, &media_id).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_get_hidden_photos(state: State<'_, AppState>) -> Result<Vec<TimelineGroup>, String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::get_hidden_photos(db).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_authenticate_os() -> Result<bool, String> {
+    // Attempt Linux OS authentication via polkit (pkexec)
+    #[cfg(target_os = "linux")]
+    {
+        match std::process::Command::new("pkexec")
+            .arg("true")
+            .output()
+        {
+            Ok(output) => {
+                return Ok(output.status.success());
+            }
+            Err(e) => {
+                crate::log_warn!("OS Auth failed: {}", e);
+                return Err("Failed to trigger OS authentication.".to_string());
+            }
+        }
+    }
+    
+    // For other OS, simulate success or implement platform-specific auth
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(true)
+    }
+}
+
 /// Find duplicate images.
 #[tauri::command]
 async fn cmd_get_duplicates(
@@ -597,6 +684,14 @@ pub fn run() {
             cmd_get_search_history,
             cmd_set_db_config,
             cmd_get_status,
+            cmd_move_to_trash,
+            cmd_restore_from_trash,
+            cmd_get_trash,
+            cmd_empty_trash,
+            cmd_hide_photo,
+            cmd_unhide_photo,
+            cmd_get_hidden_photos,
+            cmd_authenticate_os,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

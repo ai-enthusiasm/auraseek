@@ -1,18 +1,50 @@
-import { Plus, FolderHeart, Camera, Smartphone } from "lucide-react";
+import { Plus, FolderHeart, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { Photo } from "@/types/photo.type";
 
 export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNavigate?: (payload: any) => void }) {
 
-    // Compute basic collections based on photo stats
-    const favCount = photos.filter(p => p.favorite).length;
-    const camCount = photos.filter(p => p.labels?.includes("person") || p.labels?.includes("camera")).length || photos.length; // Fake camera logic
-    const scrCount = photos.filter(p => p.labels?.includes("cell phone") || p.labels?.includes("laptop")).length; // Fake screenshot logic
+    // Filter photos for collections
+    const favPhotos = photos.filter(p => p.favorite);
+    
+    // Robust screenshot detection logic
+    const isScreenshot = (p: Photo) => {
+        if (!p.filePath) return false;
+        const path = p.filePath.toLowerCase();
+        const name = path.split(/[/\\]/).pop() || "";
+        
+        return path.includes("screenshot") || 
+               path.includes("screen-capture") ||
+               path.includes("screencast") ||
+               path.includes("ảnh chụp màn hình") ||
+               path.includes("screenshots") ||
+               name.startsWith("scr_") || 
+               name.includes("screen_shot") ||
+               // Some systems use specific labels if detected
+               p.labels?.includes("cell phone") || 
+               p.labels?.includes("laptop") ||
+               p.labels?.includes("monitor");
+    };
+    
+    const scrPhotos = photos.filter(isScreenshot);
 
     const collections = [
-        { id: "fav", title: "Yêu thích", count: favCount, icon: FolderHeart, coverUrl: "https://picsum.photos/seed/fav/600/400" },
-        { id: "cam", title: "Camera", count: camCount, icon: Camera, coverUrl: "https://picsum.photos/seed/cam/600/400" },
-        { id: "scr", title: "Ảnh chụp màn hình", count: scrCount, icon: Smartphone, coverUrl: "https://picsum.photos/seed/scr/600/400" },
+        { 
+            id: "fav", 
+            title: "Yêu thích", 
+            count: favPhotos.length, 
+            icon: FolderHeart, 
+            coverUrl: favPhotos[0]?.url || null,
+            emptyMsg: "Chưa có ảnh yêu thích nào"
+        },
+        { 
+            id: "scr", 
+            title: "Ảnh chụp màn hình", 
+            count: scrPhotos.length, 
+            icon: Smartphone, 
+            coverUrl: scrPhotos[0]?.url || null,
+            emptyMsg: "Chưa có ảnh chụp màn hình nào"
+        },
     ];
 
     // Compute Custom Albums / Smart Albums based on YOLO AI Tags
@@ -72,16 +104,29 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
                 </div>
 
                 {/* Default Collections */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
                     {collections.map(col => (
                         <div key={col.id} className="group cursor-pointer" onClick={() => onNavigate?.({ id: col.id, title: col.title })}>
-                            <div className="aspect-square rounded-xl overflow-hidden bg-muted mb-3 transition-all duration-300 ring-2 ring-transparent group-hover:ring-primary shadow-sm group-hover:shadow-md relative">
-                                <img src={col.coverUrl} className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105" />
-                                <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/0 to-black/0" />
-                                <col.icon className="absolute bottom-3 left-3 w-5 h-5 text-white" />
+                            <div className="aspect-square rounded-2xl overflow-hidden bg-muted/40 mb-3 transition-all duration-300 ring-4 ring-transparent group-hover:ring-primary/20 shadow-sm group-hover:shadow-xl relative border border-border/10">
+                                {col.coverUrl ? (
+                                    <>
+                                        <img src={col.coverUrl} className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-110" />
+                                        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent opacity-60 group-hover:opacity-80 transition-opacity" />
+                                    </>
+                                ) : (
+                                    <div className="w-full h-full flex flex-col items-center justify-center gap-3 text-muted-foreground/40 bg-muted/20">
+                                        <col.icon className="w-10 h-10 stroke-[1.5]" />
+                                        <span className="text-[10px] font-bold uppercase tracking-widest">{col.emptyMsg}</span>
+                                    </div>
+                                )}
+                                <div className="absolute bottom-4 left-4 flex items-center gap-2">
+                                    <div className="p-2 rounded-lg bg-white/10 backdrop-blur-md border border-white/10">
+                                        <col.icon className="w-4 h-4 text-white" />
+                                    </div>
+                                </div>
                             </div>
-                            <div className="font-medium text-sm truncate px-1">{col.title}</div>
-                            <div className="text-xs text-muted-foreground px-1">{col.count} mục</div>
+                            <div className="font-bold text-[15px] tracking-tight truncate px-1">{col.title}</div>
+                            <div className="text-[12px] font-medium text-muted-foreground/70 px-1">{col.count} mục</div>
                         </div>
                     ))}
                 </div>

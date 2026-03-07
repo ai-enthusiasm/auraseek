@@ -89,17 +89,17 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
     return (
         <Sheet open={open} onOpenChange={onOpenChange}>
             <SheetContent side="right" className="w-full sm:max-w-md p-0 flex flex-col bg-background border-l-border/30 shadow-2xl">
-                <SheetHeader className="px-6 py-4 border-b border-border/10 bg-muted/20">
-                    <SheetTitle className="flex items-center gap-2">
+                <SheetHeader className="px-6 py-5 border-b border-border/10 bg-muted/20">
+                    <SheetTitle className="flex items-center gap-2 text-base font-bold">
                         <Filter className="w-5 h-5 text-primary" />
                         Bộ lọc nâng cao
                         {activeCount > 0 && (
-                            <span className="ml-auto flex items-center gap-1.5 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded-full">
+                            <span className="ml-auto flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider bg-primary/10 text-primary px-2 py-0.5 rounded-full">
                                 {activeCount} đang bật
                             </span>
                         )}
                     </SheetTitle>
-                    <SheetDescription>
+                    <SheetDescription className="text-[13px] text-muted-foreground/80">
                         Kết hợp nhiều điều kiện để tìm chính xác nội dung bạn cần.
                     </SheetDescription>
                 </SheetHeader>
@@ -107,9 +107,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                 <div className="flex-1 overflow-y-auto px-6 py-6 space-y-8">
 
                     {/* Media Type */}
-                    <div className="space-y-3">
-                        <div className="flex items-center gap-2 font-medium text-sm">
-                            <FileType className="w-4 h-4 text-muted-foreground" />
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                            <FileType className="w-4 h-4 text-primary/70" />
                             Loại tệp
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -121,10 +121,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                 <Button
                                     key={opt.label}
                                     variant="outline"
-                                    size="sm"
-                                    className={`rounded-full transition-all ${localFilters.mediaType === opt.value
-                                            ? "bg-primary/10 border-primary/30 text-primary"
-                                            : ""
+                                    className={`rounded-full h-9 px-4 text-[13px] transition-all ${localFilters.mediaType === opt.value
+                                            ? "bg-primary/10 border-primary/30 text-primary font-medium"
+                                            : "text-muted-foreground hover:text-foreground"
                                         }`}
                                     onClick={() => update({ mediaType: opt.value })}
                                 >
@@ -135,13 +134,13 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                     </div>
 
                     {/* Time Filter */}
-                    <div className="space-y-3">
-                        <div className="flex items-center gap-2 font-medium text-sm">
-                            <Calendar className="w-4 h-4 text-muted-foreground" />
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                            <Calendar className="w-4 h-4 text-primary/70" />
                             Tháng / Năm
                         </div>
                         <div className="space-y-1.5">
-                            <label className="text-xs text-muted-foreground">Năm</label>
+                            <label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground/70">Năm</label>
                             <input
                                 type="number"
                                 min="2000"
@@ -149,7 +148,7 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                 value={localFilters.year || ""}
                                 onChange={(e) => update({ year: e.target.value ? parseInt(e.target.value) : undefined })}
                                 placeholder="e.g. 2024"
-                                className="flex h-9 w-32 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm"
+                                className="flex h-9 w-32 rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-sm font-medium"
                             />
                         </div>
                         <div className="flex flex-wrap gap-2">
@@ -157,10 +156,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                 <Button
                                     key={m.value}
                                     variant="outline"
-                                    size="sm"
-                                    className={`rounded-full text-xs h-7 px-3 transition-all ${localFilters.month === m.value
-                                            ? "bg-primary/10 border-primary/30 text-primary"
-                                            : ""
+                                    className={`rounded-full text-[12px] h-8 px-3 transition-all ${localFilters.month === m.value
+                                            ? "bg-primary/10 border-primary/30 text-primary font-medium"
+                                            : "text-muted-foreground hover:text-foreground"
                                         }`}
                                     onClick={() => update({ month: localFilters.month === m.value ? undefined : m.value })}
                                 >
@@ -171,9 +169,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                     </div>
 
                     {/* Object Filter — loaded from DB */}
-                    <div className="space-y-3">
-                        <div className="flex items-center gap-2 font-medium text-sm">
-                            <Tag className="w-4 h-4 text-muted-foreground" />
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                            <Tag className="w-4 h-4 text-primary/70" />
                             Đối tượng (từ dữ liệu đã quét)
                         </div>
 
@@ -231,9 +229,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                     </div>
 
                     {/* Person Filter — loaded from DB */}
-                    <div className="space-y-3">
-                        <div className="flex items-center gap-2 font-medium text-sm">
-                            <Users className="w-4 h-4 text-muted-foreground" />
+                    <div className="space-y-4">
+                        <div className="flex items-center gap-2 text-sm font-bold text-foreground">
+                            <Users className="w-4 h-4 text-primary/70" />
                             Người trong ảnh (từ dữ liệu đã quét)
                         </div>
 
@@ -289,11 +287,11 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                     </div>
                 </div>
 
-                <div className="p-4 border-t border-border/10 bg-background flex gap-3">
-                    <Button variant="outline" className="flex-1" onClick={handleReset}>
+                <div className="p-5 border-t border-border/10 bg-background flex gap-3">
+                    <Button variant="outline" className="flex-1 h-11 rounded-full font-bold text-[13px]" onClick={handleReset}>
                         Xóa tất cả
                     </Button>
-                    <Button className="flex-[2]" onClick={handleApply}>
+                    <Button className="flex-[2] h-11 rounded-full font-bold text-[13px]" onClick={handleApply}>
                         Áp dụng bộ lọc
                         {activeCount > 0 && ` (${activeCount})`}
                     </Button>

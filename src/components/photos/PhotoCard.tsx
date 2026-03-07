@@ -23,6 +23,7 @@ export function PhotoCard({
   overlayShowFaces  = true,
   overlayShowLabels = true,
 }: PhotoCardProps) {
+
   const { selectedIds, toggleSelection } = useSelection();
   const isSelected   = selectedIds.has(photo.id);
   const [isFavorite, setIsFavorite] = useState(photo.favorite ?? false);
@@ -31,6 +32,7 @@ export function PhotoCard({
   const isVideo = photo.type === "video";
 
   // Ref for the image element (used by SegmentOverlay for dimensions)
+
   const imgRef = useRef<HTMLImageElement>(null);
 
   // Track rendered dimensions for the overlay
@@ -57,10 +59,13 @@ export function PhotoCard({
     e.stopPropagation();
     const next = !isFavorite;
     setIsFavorite(next);
+    // Notify other components (App.tsx listener, FullScreenViewer, etc.)
+    window.dispatchEvent(new CustomEvent("photo_toggle_favorite", { detail: { id: photo.id } }));
     try {
       await AuraSeekApi.toggleFavorite(photo.id);
     } catch {
       setIsFavorite(!next);
+      window.dispatchEvent(new Event("refresh_photos"));
     }
   };
 

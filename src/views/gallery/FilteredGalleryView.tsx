@@ -8,7 +8,7 @@ import { ArrowLeft } from "lucide-react";
 type FilteredGalleryProps = {
     title: string;
     subtitle?: string;
-    filterType?: "album" | "person" | "favorites" | "recent";
+    filterType?: "album" | "person" | "favorites";
     filterPayload?: string;
     photos?: Photo[];
     onBack: () => void;
@@ -21,19 +21,26 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
         return photos.filter(photo => {
             switch (filterType) {
                 case "favorites": return photo.favorite;
-                case "recent":
-                    // Last 7 days
-                    const sevenDaysAgo = new Date();
-                    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-                    return new Date(photo.takenAt) >= sevenDaysAgo;
                 case "person": return photo.faceIds?.includes(filterPayload || "") || photo.faces?.includes(filterPayload || "");
                 case "album":
+                    if (filterPayload === "scr") {
+                        const path = (photo.filePath || "").toLowerCase();
+                        const name = path.split(/[/\\]/).pop() || "";
+                        return path.includes("screenshot") || 
+                               path.includes("screen-capture") ||
+                               path.includes("screencast") ||
+                               path.includes("ảnh chụp màn hình") ||
+                               path.includes("screenshots") ||
+                               name.startsWith("scr_") || 
+                               name.includes("screen_shot") ||
+                               photo.labels?.includes("cell phone") || 
+                               photo.labels?.includes("laptop") ||
+                               photo.labels?.includes("monitor");
+                    }
                     if (filterPayload?.startsWith("tag_")) {
                         const tag = filterPayload.replace("tag_", "");
                         return photo.labels?.map(l => l.toLowerCase()).includes(tag);
                     }
-                    // For dummy standard collections (fav, cam, scr, vid) handled separately in some apps, 
-                    // but if it arrives here, pass through or fake it:
                     if (filterPayload === "vid") return photo.type === "video";
                     return true;
                 default:

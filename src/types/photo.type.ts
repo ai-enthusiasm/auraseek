@@ -57,5 +57,7 @@ export type Photo = {
   type?: "photo" | "video";
   /** Static thumbnail image URL for videos (first-frame JPEG) */
   thumbnailUrl?: string;
+  /** Original file path on disk (used for album/folder filtering) */
+  filePath?: string;
 };
 

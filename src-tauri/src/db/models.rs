@@ -74,6 +74,10 @@ pub struct MediaDoc {
     pub objects:    Vec<ObjectEntry>,
     pub faces:      Vec<FaceEntry>,
     pub processed:  bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<SurrealDatetime>,
+    #[serde(default)]
+    pub is_hidden:  bool,
 }
 
 /// Row returned from SurrealDB with an `id` field (for .take())
@@ -88,6 +92,9 @@ pub struct MediaRow {
     pub processed:  bool,
     #[serde(default)]
     pub favorite:   bool,
+    pub deleted_at: Option<SurrealDatetime>,
+    #[serde(default)]
+    pub is_hidden:  bool,
 }
 
 /// Embedding document (vector stored in SurrealDB)
@@ -233,6 +240,8 @@ pub struct TimelineItem {
     pub faces:             Vec<String>,
     pub face_ids:          Vec<String>,
     pub favorite:          bool,
+    pub deleted_at:        Option<String>,
+    pub is_hidden:         bool,
     pub detected_objects:  Vec<DetectedObject>,
     pub detected_faces:    Vec<DetectedFace>,
 }
