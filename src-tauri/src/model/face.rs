@@ -18,6 +18,7 @@ const COSINE_THRESHOLD: f32 = 0.36;
 pub struct FaceGroup {
     pub face_id: String,
     pub name:    Option<String>,
+    pub conf:    f32,
     pub bbox:    [f32; 4],
     #[serde(skip)]
     pub embedding: Vec<f32>,
@@ -146,6 +147,7 @@ impl FaceModel {
             groups.push(FaceGroup {
                 face_id,
                 name,
+                conf: face.score,
                 bbox: [
                     face.bbox[0] * ratio_x, 
                     face.bbox[1] * ratio_y, 
