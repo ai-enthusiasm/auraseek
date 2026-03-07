@@ -9,7 +9,7 @@ use opencv::{
 use crate::processor::vision::face_image::FaceDb;
 use crate::log_info;
 
-const SCORE_THRESHOLD: f32 = 0.6; 
+const SCORE_THRESHOLD: f32 = 0.95; 
 const NMS_THRESHOLD: f32 = 0.3;
 const TOP_K: i32 = 5000;
 const COSINE_THRESHOLD: f32 = 0.36;
