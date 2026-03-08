@@ -95,8 +95,12 @@ export function PhotoInfoPanel({ photo }: { photo: Photo }) {
           <HardDrive className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
           <div className="flex-1">
             <div className="text-sm">Đã sao lưu ở chất lượng gốc</div>
-            <div className="text-xs text-muted-foreground mt-0.5">Ảnh này chiếm {(photo.sizeBytes / 1048576).toFixed(1)} MB dung lượng bộ nhớ</div>
-            <div className="text-xs text-muted-foreground mt-1 break-all">Path: /home/phuoccanh/Pictures/AuraSeek/{photo.id}.jpg</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              {photo.type === "video" ? "Video" : "Ảnh"} này chiếm {(photo.sizeBytes / 1048576).toFixed(1)} MB dung lượng bộ nhớ
+            </div>
+            {photo.filePath && (
+              <div className="text-xs text-muted-foreground mt-1 break-all font-mono">Path: {photo.filePath}</div>
+            )}
           </div>
         </div>
 

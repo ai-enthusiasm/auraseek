@@ -291,7 +291,7 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                     <Button variant="outline" className="flex-1 h-11 rounded-full font-bold text-[13px]" onClick={handleReset}>
                         Xóa tất cả
                     </Button>
-                    <Button className="flex-[2] h-11 rounded-full font-bold text-[13px]" onClick={handleApply}>
+                    <Button className="flex-2 h-11 rounded-full font-bold text-[13px]" onClick={handleApply}>
                         Áp dụng bộ lọc
                         {activeCount > 0 && ` (${activeCount})`}
                     </Button>

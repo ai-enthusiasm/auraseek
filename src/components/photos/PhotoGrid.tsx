@@ -19,7 +19,7 @@ export function PhotoGrid({
   overlayShowLabels  = true,
 }: PhotoGridProps) {
   return (
-    <div className="grid gap-1 sm:gap-1.5 md:gap-2 lg:gap-2.5 xl:gap-3 [grid-template-columns:repeat(auto-fill,minmax(160px,1fr))]">
+    <div className="grid gap-1 sm:gap-1.5 md:gap-2 lg:gap-2.5 xl:gap-3 grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
       {photos.map((photo) => (
         <PhotoCard
           key={photo.id}

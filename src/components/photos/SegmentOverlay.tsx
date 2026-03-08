@@ -31,6 +31,8 @@ export interface SegmentOverlayProps {
   showFaces?: boolean;
   /** Whether to draw object/face labels + confidence (default: true) */
   showLabels?: boolean;
+  /** Current zoom/view scale — use this to adjust stroke/font size to stay crisp */
+  viewScale?: number;
 }
 
 // Decode [offset, length][] RLE into a Uint8Array of 0/1 flags
@@ -63,6 +65,7 @@ export function SegmentOverlay({
   objectFit  = "cover",
   showFaces  = true,
   showLabels = true,
+  viewScale  = 1,
 }: SegmentOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -151,7 +154,10 @@ export function SegmentOverlay({
             !pixels[Math.max(oy - 1, 0) * imgNaturalW + ox] ||
             !pixels[Math.min(oy + 1, imgNaturalH - 1) * imgNaturalW + ox];
 
-          if (isEdge) ctx.fillRect(px, py, 2, 2);
+          if (isEdge) {
+            const size = Math.max(1, 2 / viewScale);
+            ctx.fillRect(px - size / 2, py - size / 2, size, size);
+          }
         }
       }
     }
@@ -175,16 +181,17 @@ export function SegmentOverlay({
     // ── 5. Labels ─────────────────────────────────────────────────────
     if (showLabels) {
       const label = (text: string, bx: number, by: number, rgb: [number,number,number]) => {
-        ctx.font = "bold 11px system-ui, sans-serif";
+        const fontSize = Math.max(6, 11 / viewScale);
+        ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
         const tw  = ctx.measureText(text).width;
-        const pad = 4;
-        const lh  = 17;
+        const pad = 4 / viewScale;
+        const lh  = 17 / viewScale;
         const lx  = Math.max(0, Math.min(bx, displayW - tw - pad * 2));
-        const ly  = by > lh + 2 ? by - lh - 2 : by + 2;
+        const ly  = by > lh + 2 / viewScale ? by - lh - 2 / viewScale : by + 2 / viewScale;
         ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.88)`;
         ctx.fillRect(lx, ly, tw + pad * 2, lh);
         ctx.fillStyle = "#fff";
-        ctx.fillText(text, lx + pad, ly + lh - 4);
+        ctx.fillText(text, lx + pad, ly + lh - 4 / viewScale);
       };
 
       masks.forEach(({ obj, rgb, pixels }) => {

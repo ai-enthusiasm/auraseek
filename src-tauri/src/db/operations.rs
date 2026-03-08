@@ -15,6 +15,7 @@ pub fn record_id_to_string(id: &RecordId) -> String {
     format!("{}:{}", id.table, key_str)
 }
 
+#[allow(dead_code)]
 fn strip_table_prefix(id: &str) -> &str {
     id.find(':').map(|i| &id[i+1..]).unwrap_or(id)
 }
@@ -260,6 +261,43 @@ impl DbOperations {
         .check()
         .map_err(|e| anyhow::anyhow!("set_source_dir failed: {}", e))?;
         Ok(())
+    }
+
+    /// Delete all media, embeddings, and persons for a fresh start.
+    pub async fn clear_database(db: &SurrealDb) -> Result<()> {
+        db.db.query("DELETE media").await?.check()?;
+        db.db.query("DELETE embedding").await?.check()?;
+        db.db.query("DELETE person").await?.check()?;
+        db.db.query("DELETE search_history").await?.check()?;
+        Ok(())
+    }
+
+    /// Prune any media records whose files no longer exist on disk.
+    pub async fn prune_missing_media(db: &SurrealDb, source_dir: &str) -> Result<usize> {
+        let mut res = db.db.query("SELECT id, file.name AS name FROM media").await?;
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct IdNameRow { id: RecordId, name: Option<String> }
+        let rows: Vec<IdNameRow> = res.take(0)?;
+        
+        let mut count = 0;
+        let base = std::path::Path::new(source_dir);
+        
+        for r in rows {
+            if let Some(name) = r.name {
+                let path = base.join(&name);
+                if !path.exists() {
+                    let id_str = record_id_to_string(&r.id);
+                    crate::log_info!("🗑️ Pruning missing file: {}", name);
+                    
+                    // Delete embedding first
+                    db.db.query(format!("DELETE embedding WHERE media_id = {}", id_str)).await?.check()?;
+                    // Delete the media record
+                    db.db.query(format!("DELETE {}", id_str)).await?.check()?;
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
     }
 
     // ─── Trash & Hidden ──────────────────────────────────────────────
@@ -569,6 +607,10 @@ impl DbOperations {
     // ─── Duplicates ──────────────────────────────────────────────────
 
     pub async fn get_duplicates(db: &SurrealDb, source_dir: &str) -> Result<Vec<DuplicateGroup>> {
+        let mut groups = vec![];
+        let base = source_dir.trim_end_matches('/');
+
+        // 1. Exact Hash Duplicates
         let mut res = db.db.query(
             "SELECT file.sha256 AS sha256, array::group(id) AS ids, count() AS cnt
             FROM media
@@ -583,18 +625,26 @@ impl DbOperations {
             ids: Vec<RecordId>,
         }
         let rows: Vec<DupRow> = res.take(0)?;
-        let base = source_dir.trim_end_matches('/');
 
-        let mut groups = vec![];
+        let mut hash_sets = std::collections::HashSet::new();
+
         for row in rows {
-            let ids_str = row.ids.iter().map(|id: &RecordId| record_id_to_string(id)).collect::<Vec<_>>().join(", ");
+            let ids_str = row.ids.iter().map(|id| record_id_to_string(id)).collect::<Vec<_>>().join(", ");
             let query = format!("SELECT id, file.path, file.size FROM media WHERE id IN [{}] AND deleted_at = NONE AND is_hidden = false", ids_str);
             let mut r2 = db.db.query(&query).await?;
             #[derive(serde::Deserialize, SurrealValue)]
             struct DI { id: RecordId, name: Option<String>, size: Option<u64> }
             let items: Vec<DI> = r2.take(0)?;
+            
+            if items.len() < 2 { continue; } // safe-guard
+
+            let mut sorted_ids: Vec<String> = items.iter().map(|i| record_id_to_string(&i.id)).collect();
+            sorted_ids.sort();
+            hash_sets.insert(sorted_ids.join(","));
+
             groups.push(DuplicateGroup {
-                sha256: row.sha256,
+                group_id: row.sha256.clone(),
+                reason: "Trùng mã Hash (Khớp dữ liệu nhị phân chính xác 100%)".to_string(),
                 items: items.into_iter().map(|i| DuplicateItem {
                     media_id: record_id_to_string(&i.id),
                     file_path: i.name.map(|n| format!("{}/{}", base, n)).unwrap_or_default(),
@@ -602,6 +652,105 @@ impl DbOperations {
                 }).collect(),
             });
         }
+
+        // 2. Vector Cosine Similarity >= 0.95 Duplicates
+        // Note: fetch vectors belonging only to media that is not deleted/hidden
+        let mut res2 = db.db.query(
+            "SELECT media_id, vec FROM embedding WHERE media_id.deleted_at = NONE AND media_id.is_hidden = false"
+        ).await?;
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct EmbRow { media_id: RecordId, vec: Vec<f32> }
+        let emb_rows: Vec<EmbRow> = res2.take(0)?;
+        
+        if emb_rows.len() > 1 {
+            use rayon::prelude::*;
+            let threshold = 0.95_f32;
+            
+            fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+                let mut dot: f32 = 0.0;
+                let mut norm_a: f32 = 0.0;
+                let mut norm_b: f32 = 0.0;
+                for (x, y) in a.iter().zip(b.iter()) {
+                    dot += x * y;
+                    norm_a += x * x;
+                    norm_b += y * y;
+                }
+                if norm_a == 0.0 || norm_b == 0.0 { return 0.0; }
+                dot / (norm_a.sqrt() * norm_b.sqrt())
+            }
+
+            // Find all matching pairs
+            let pairs: Vec<(usize, usize)> = (0..emb_rows.len()).into_par_iter().flat_map(|i| {
+                let mut local_pairs = vec![];
+                for j in (i+1)..emb_rows.len() {
+                    // Do not cluster same media_id
+                    if emb_rows[i].media_id == emb_rows[j].media_id {
+                        continue;
+                    }
+                    if cosine_similarity(&emb_rows[i].vec, &emb_rows[j].vec) >= threshold {
+                        local_pairs.push((i, j));
+                    }
+                }
+                local_pairs
+            }).collect();
+
+            if !pairs.is_empty() {
+                // Disjoint Set Union
+                let mut parent: Vec<usize> = (0..emb_rows.len()).collect();
+                fn find(p: &mut Vec<usize>, i: usize) -> usize {
+                    if p[i] == i { i } else {
+                        let r = find(p, p[i]);
+                        p[i] = r;
+                        r
+                    }
+                }
+                for (i, j) in pairs {
+                    let ri = find(&mut parent, i);
+                    let rj = find(&mut parent, j);
+                    if ri != rj { parent[ri] = rj; }
+                }
+
+                let mut clusters: std::collections::HashMap<usize, std::collections::HashSet<RecordId>> = std::collections::HashMap::new();
+                for i in 0..emb_rows.len() {
+                    let r = find(&mut parent, i);
+                    clusters.entry(r).or_default().insert(emb_rows[i].media_id.clone());
+                }
+
+                let mut cluster_idx = 0;
+                for cluster in clusters.into_values() {
+                    if cluster.len() < 2 { continue; }
+                    
+                    let ids_str = cluster.iter().map(|id| record_id_to_string(id)).collect::<Vec<_>>().join(", ");
+                    let query = format!("SELECT id, file.path, file.size FROM media WHERE id IN [{}]", ids_str);
+                    let mut r3 = db.db.query(&query).await?;
+                    #[derive(serde::Deserialize, SurrealValue)]
+                    struct DI { id: RecordId, name: Option<String>, size: Option<u64> }
+                    let items: Vec<DI> = r3.take(0)?;
+
+                    if items.len() < 2 { continue; }
+
+                    let mut sorted_ids: Vec<String> = items.iter().map(|i| record_id_to_string(&i.id)).collect();
+                    sorted_ids.sort();
+                    
+                    // Skip if exactly identical to some hash duplicate group to avoid redundant groups showing
+                    if hash_sets.contains(&sorted_ids.join(",")) {
+                        continue;
+                    }
+
+                    groups.push(DuplicateGroup {
+                        group_id: format!("sim_{}_{cluster_idx}", record_id_to_string(cluster.iter().next().unwrap())),
+                        reason: "Khung hình tương tự nhau (AI phát hiện giống > 95%)".to_string(),
+                        items: items.into_iter().map(|i| DuplicateItem {
+                            media_id: record_id_to_string(&i.id),
+                            file_path: i.name.map(|n| format!("{}/{}", base, n)).unwrap_or_default(),
+                            size: i.size.unwrap_or(0),
+                        }).collect(),
+                    });
+                    cluster_idx += 1;
+                }
+            }
+        }
+
         Ok(groups)
     }
 
@@ -627,6 +776,25 @@ impl DbOperations {
         .bind(("lim", limit))
         .await?;
         Ok(res.take(0)?)
+    }
+
+    pub async fn delete_media_by_name(db: &SurrealDb, name: &str) -> Result<()> {
+        // Find the record first to get the ID for embedding deletion
+        let mut res = db.db.query("SELECT id FROM media WHERE file.name = $name")
+            .bind(("name", name.to_string()))
+            .await?;
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct IdRow { id: RecordId }
+        let rows: Vec<IdRow> = res.take(0)?;
+        
+        for r in rows {
+            let id_str = record_id_to_string(&r.id);
+            // Delete embedding
+            db.db.query(format!("DELETE embedding WHERE media_id = {}", id_str)).await?.check()?;
+            // Delete media
+            db.db.query(format!("DELETE {}", id_str)).await?.check()?;
+        }
+        Ok(())
     }
 }
 

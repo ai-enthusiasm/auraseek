@@ -18,6 +18,13 @@ use ingest::image_ingest::IngestSummary;
 use search::pipeline::{SearchPipeline, SearchQuery};
 use utils::logger::Logger;
 
+use notify::{RecursiveMode, EventKind};
+use notify_debouncer_full::{new_debouncer, Debouncer, NoCache, DebouncedEvent};
+use std::time::Duration;
+use std::path::Path;
+
+type AppWatcher = Debouncer<notify::RecommendedWatcher, NoCache>;
+
 // ─── Sync status ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -45,6 +52,7 @@ pub struct AppState {
     /// Loaded from config_auraseek on init; kept in memory to avoid repeated DB queries
     pub source_dir:   Mutex<String>,
     pub sync_status:  Arc<Mutex<SyncStatus>>,
+    pub watcher:      Arc<Mutex<Option<AppWatcher>>>,
 }
 
 impl AppState {
@@ -57,6 +65,7 @@ impl AppState {
             surreal_pass: Mutex::new("root".to_string()),
             source_dir:   Mutex::new(String::new()),
             sync_status:  Arc::new(Mutex::new(SyncStatus::default())),
+            watcher:      Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -81,6 +90,100 @@ fn available_ram_percent() -> f64 {
     }
     // macOS fallback or unknown: assume OK
     50.0
+}
+
+// ─── Folder Watcher ──────────────────────────────────────────────────────────
+
+async fn setup_watcher(state: &AppState) -> Result<()> {
+    let source_dir = state.source_dir.lock().await.clone();
+    if source_dir.is_empty() { return Ok(()); }
+
+    // Clear existing watcher
+    {
+        let mut watcher_guard = state.watcher.lock().await;
+        *watcher_guard = None;
+    }
+
+    let engine_arc = state.engine.clone();
+    let db_arc     = state.db.clone();
+    let sync_arc   = state.sync_status.clone();
+    let source_dir_loop = source_dir.clone();
+
+    // Use a channel to process events in the background
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<DebouncedEvent>(100);
+
+    let mut debouncer = new_debouncer(Duration::from_secs(2), None, move |result: Result<Vec<DebouncedEvent>, _>| {
+        if let Ok(events) = result {
+            for event in events {
+                let _ = tx.blocking_send(event);
+            }
+        }
+    })?;
+
+    debouncer.watch(Path::new(&source_dir), RecursiveMode::Recursive)?;
+
+    // Store watcher
+    *state.watcher.lock().await = Some(debouncer);
+
+    // Background task to process events
+    tokio::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            handle_watch_event(event, &db_arc, &engine_arc, &sync_arc, &source_dir_loop).await;
+        }
+    });
+
+    crate::log_info!("👀 Watcher started for: {}", source_dir);
+    Ok(())
+}
+
+async fn handle_watch_event(
+    event: DebouncedEvent,
+    db: &Arc<Mutex<Option<SurrealDb>>>,
+    engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
+    _sync: &Arc<Mutex<SyncStatus>>,
+    source_dir: &str,
+) {
+    let kind = event.kind;
+    let paths = &event.paths;
+    
+    match kind {
+        EventKind::Create(_) | EventKind::Modify(_) => {
+            let paths_to_ingest: Vec<String> = paths.iter()
+                .filter(|p| {
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    let fname = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    (crate::ingest::image_ingest::IMAGE_EXTENSIONS.contains(&ext.as_str()) && !fname.ends_with(".thumb.jpg")) ||
+                    crate::ingest::image_ingest::VIDEO_EXTENSIONS.contains(&ext.as_str())
+                })
+                .map(|p| p.to_string_lossy().to_string())
+                .collect();
+            
+            if !paths_to_ingest.is_empty() {
+                crate::log_info!("👀 Watcher: Ingesting {} new/modified files", paths_to_ingest.len());
+                let result = crate::ingest::image_ingest::ingest_files(
+                    paths_to_ingest,
+                    source_dir.to_string(),
+                    db.clone(),
+                    engine.clone()
+                ).await;
+                if let Err(e) = result {
+                    crate::log_warn!("Watcher ingest failed: {}", e);
+                }
+            }
+        }
+        EventKind::Remove(_) => {
+            for path in paths {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if let Some(ref sdb) = *db.lock().await {
+                    crate::log_info!("👀 Watcher: Deleting missing media: {}", name);
+                    if let Err(e) = DbOperations::delete_media_by_name(sdb, name).await {
+                        crate::log_warn!("Watcher delete failed: {}", e);
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 // ─── Tauri Commands ──────────────────────────────────────────────────────────
@@ -135,6 +238,7 @@ async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
                 Ok(Some(dir)) => {
                     crate::log_info!("📂 source_dir loaded from config: {}", dir);
                     *state.source_dir.lock().await = dir;
+                    let _ = setup_watcher(&state).await;
                 }
                 Ok(None) => {
                     crate::log_info!("📂 No source_dir configured yet (first run)");
@@ -177,6 +281,7 @@ async fn cmd_set_source_dir(
     }
     *state.source_dir.lock().await = dir.clone();
     crate::log_info!("📂 source_dir updated to: {}", dir);
+    let _ = setup_watcher(&state).await;
     Ok(())
 }
 
@@ -224,6 +329,11 @@ async fn cmd_auto_scan(state: State<'_, AppState>) -> Result<String, String> {
     }
 
     tokio::spawn(async move {
+        // Prune first
+        if let Some(ref sdb) = *db_arc.lock().await {
+            let _ = DbOperations::prune_missing_media(sdb, &dir).await;
+        }
+
         let result = ingest::image_ingest::ingest_folder(
             dir.clone(), db_arc, engine_arc, None
         ).await;
@@ -252,6 +362,23 @@ async fn cmd_auto_scan(state: State<'_, AppState>) -> Result<String, String> {
     });
 
     Ok("Sync started".into())
+}
+
+#[tauri::command]
+async fn cmd_cleanup_database(state: State<'_, AppState>) -> Result<usize, String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    let source_dir = state.source_dir.lock().await.clone();
+    DbOperations::prune_missing_media(db, &source_dir).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn cmd_reset_database(state: State<'_, AppState>) -> Result<(), String> {
+    let db_guard = state.db.lock().await;
+    let db = db_guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::clear_database(db).await.map_err(|e| e.to_string())?;
+    *state.source_dir.lock().await = String::new();
+    Ok(())
 }
 
 /// Scan a folder for images/videos and run AI pipeline (manual trigger).
@@ -694,6 +821,8 @@ pub fn run() {
             cmd_unhide_photo,
             cmd_get_hidden_photos,
             cmd_authenticate_os,
+            cmd_cleanup_database,
+            cmd_reset_database,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

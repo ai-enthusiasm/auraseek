@@ -5,10 +5,12 @@ import {
     DialogHeader,
     DialogTitle,
 } from "@/components/ui/dialog";
-import { Settings, HardDrive, Cpu, CheckCircle2, AlertCircle, AlertTriangle } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { Settings, Cpu } from "lucide-react";
 import { useState, useEffect } from "react";
 import { AuraSeekApi } from "@/lib/api";
+import { SettingsSourceSection } from "./SettingsSourceSection.tsx";
+import { SettingsDatabaseSection } from "./SettingsDatabaseSection.tsx";
+import { SettingsErrorAlert } from "./SettingsErrorAlert.tsx";
 
 interface SettingsModalProps {
     open: boolean;
@@ -23,6 +25,9 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
     const [saved, setSaved] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [showWarning, setShowWarning] = useState(false);
+    
+    const [cleaning, setCleaning] = useState(false);
+    const [resetting, setResetting] = useState(false);
 
     useEffect(() => {
         if (open) {
@@ -62,6 +67,39 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
         }
     };
 
+    const handleCleanup = async () => {
+        setCleaning(true);
+        try {
+            const removed = await AuraSeekApi.cleanupDatabase();
+            setError(null);
+            alert(`Đã dọn dẹp ${removed} ảnh không còn tồn tại trên đĩa.`);
+            window.dispatchEvent(new Event("refresh_photos"));
+        } catch (e) {
+            setError(String(e));
+        } finally {
+            setCleaning(false);
+        }
+    };
+
+    const handleReset = async () => {
+        if (!confirm("Bạn có chắc chắn muốn xóa toàn bộ dữ liệu database? Thao tác này KHÔNG XÓA ảnh trên đĩa của bạn, nhưng sẽ làm mất toàn bộ thông tin nhận diện AI, người, và lịch sử tìm kiếm.")) {
+            return;
+        }
+        setResetting(true);
+        try {
+            await AuraSeekApi.resetDatabase();
+            setSourceFolder("");
+            onSourceDirChange?.("");
+            setError(null);
+            alert("Đã đặt lại database thành công.");
+            window.location.reload(); // Hard reload to clear all state
+        } catch (e) {
+            setError(String(e));
+        } finally {
+            setResetting(false);
+        }
+    };
+
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="sm:max-w-[520px] p-0 overflow-hidden bg-background/95 backdrop-blur-xl shadow-2xl border-border/40 sm:rounded-2xl">
@@ -76,73 +114,36 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
                 </DialogHeader>
 
                 <div className="px-6 py-6 flex flex-col gap-6 overflow-y-auto max-h-[70vh]">
-                    {/* Source Folder */}
-                    <div className="space-y-3">
-                        <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-                            <HardDrive className="w-4 h-4 text-primary" />
-                            Thư mục nguồn ảnh
-                        </h3>
-                        <p className="text-sm text-muted-foreground leading-relaxed">
-                            Thư mục chứa ảnh sẽ được quét, phân tích AI và đồng bộ tự động khi mở ứng dụng.
-                        </p>
-                        <input
-                            type="text"
-                            value={sourceFolder}
-                            onChange={e => { setSourceFolder(e.target.value); setShowWarning(false); setSaved(false); }}
-                            placeholder="/home/user/Pictures"
-                            className="flex h-10 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm font-mono"
-                        />
+                    <SettingsSourceSection
+                        sourceFolder={sourceFolder}
+                        setSourceFolder={(value: string) => {
+                            setSourceFolder(value);
+                            setShowWarning(false);
+                            setSaved(false);
+                        }}
+                        saving={saving}
+                        saved={saved}
+                        showWarning={showWarning}
+                        onConfirmWarning={handleSave}
+                        onCancelWarning={() => setShowWarning(false)}
+                        onSave={handleSave}
+                        hasExistingSource={!!currentSourceDir}
+                        hasChanged={hasChanged}
+                        setShowWarning={setShowWarning}
+                        setError={setError}
+                    />
 
-                        {showWarning && (
-                            <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 flex gap-2 text-sm text-amber-700 dark:text-amber-400">
-                                <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                                <div>
-                                    <strong>Lưu ý:</strong> Bạn phải di chuyển các ảnh cũ vào thư mục mới nếu muốn thay đổi thư mục nguồn ảnh để đảm bảo trải nghiệm tốt hơn.
-                                    <div className="mt-2 flex gap-2">
-                                        <button
-                                            onClick={handleSave}
-                                            className="rounded-md bg-amber-600 hover:bg-amber-500 px-3 py-1 text-xs text-white font-medium"
-                                        >
-                                            Tôi hiểu, xác nhận
-                                        </button>
-                                        <button
-                                            onClick={() => setShowWarning(false)}
-                                            className="rounded-md bg-white/10 hover:bg-white/20 px-3 py-1 text-xs font-medium"
-                                        >
-                                            Hủy
-                                        </button>
-                                    </div>
-                                </div>
-                            </div>
-                        )}
+                    <SettingsDatabaseSection
+                        cleaning={cleaning}
+                        resetting={resetting}
+                        onCleanup={handleCleanup}
+                        onReset={handleReset}
+                    />
 
-                        {!showWarning && (
-                            <Button
-                                onClick={handleSave}
-                                disabled={saving || !sourceFolder.trim()}
-                                className="w-full h-10 mt-1 rounded-xl font-medium transition-all shadow-sm"
-                            >
-                                {saving ? (
-                                    <><div className="w-4 h-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin" />Đang lưu...</>
-                                ) : saved ? (
-                                    <><CheckCircle2 className="w-4 h-4 mr-2" />Đã lưu</>
-                                ) : (
-                                    "Lưu thư mục nguồn"
-                                )}
-                            </Button>
-                        )}
-                    </div>
+                    <SettingsErrorAlert error={error} />
 
-                    {error && (
-                        <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 flex gap-2 text-sm text-destructive">
-                            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-                            {error}
-                        </div>
-                    )}
-
-                    {/* About */}
                     <div className="pt-4 border-t border-border/10 flex flex-col items-center justify-center text-center space-y-3">
-                        <div className="w-12 h-12 bg-gradient-to-tr from-primary to-indigo-500 rounded-2xl flex items-center justify-center shadow-lg shadow-primary/20">
+                        <div className="w-12 h-12 bg-linear-to-tr from-primary to-indigo-500 rounded-2xl flex items-center justify-center shadow-lg shadow-primary/20">
                             <Cpu className="w-6 h-6 text-white" />
                         </div>
                         <div>

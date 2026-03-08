@@ -8,7 +8,7 @@ import { ArrowLeft } from "lucide-react";
 type FilteredGalleryProps = {
     title: string;
     subtitle?: string;
-    filterType?: "album" | "person" | "favorites";
+    filterType?: "album" | "person" | "favorites" | "videos";
     filterPayload?: string;
     photos?: Photo[];
     onBack: () => void;
@@ -20,7 +20,13 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
     const filteredPhotos = useMemo(() => {
         return photos.filter(photo => {
             switch (filterType) {
-                case "favorites": return photo.favorite;
+                case "favorites": 
+                    if (!photo.favorite) return false;
+                    if (filterPayload === "photos") return photo.type !== "video";
+                    if (filterPayload === "videos") return photo.type === "video";
+                    return true;
+                case "videos":
+                    return photo.type === "video";
                 case "person": return photo.faceIds?.includes(filterPayload || "") || photo.faces?.includes(filterPayload || "");
                 case "album":
                     if (filterPayload === "scr") {
