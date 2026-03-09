@@ -813,6 +813,15 @@ fn dirs_home() -> std::path::PathBuf {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Workaround for WebKitGTK X11 DRI2/hardware acceleration crash on Linux when playing videos
+    // NVIDIA proprietary drivers fail with DMABUF, causing DRI2Connect X11 errors.
+    #[cfg(target_os = "linux")]
+    {
+        unsafe {
+            std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::new())

@@ -31,11 +31,37 @@ export function FullScreenVideoViewer({
     const [isFavorite, setIsFavorite] = useState(photo.favorite || false);
     const [isSharing, setIsSharing] = useState(false);
     const [videoError, setVideoError] = useState(false);
+    const [blobUrl, setBlobUrl] = useState<string | null>(null);
 
     useEffect(() => {
         setIsFavorite(photo.favorite || false);
         setVideoError(false);
-    }, [photo.id, photo.favorite]);
+        setBlobUrl(null);
+
+        let active = true;
+        let urlToRevoke: string | null = null;
+
+        // Bypass WebKitGTK/GStreamer asset streaming issues by fetching to a Blob URL
+        fetch(photo.url)
+            .then(res => res.blob())
+            .then(blob => {
+                if (!active) return;
+                const url = URL.createObjectURL(blob);
+                urlToRevoke = url;
+                setBlobUrl(url);
+            })
+            .catch(err => {
+                console.error("Failed to fetch video blob:", err);
+                if (active) setVideoError(true);
+            });
+
+        return () => {
+            active = false;
+            if (urlToRevoke) {
+                URL.revokeObjectURL(urlToRevoke);
+            }
+        };
+    }, [photo.id, photo.url, photo.favorite]);
 
     const handleFavorite = async () => {
         try {
@@ -120,9 +146,11 @@ export function FullScreenVideoViewer({
                 <FullScreenTopBar
                     hasOverlays={false}
                     showBbox={false}
-                    onToggleBbox={() => {}}
+                    onToggleBbox={() => { }}
+                    showMask={false}
+                    onToggleMask={() => { }}
                     scale={1}
-                    onZoomClick={() => {}}
+                    onZoomClick={() => { }}
                     isTrashMode={isTrashMode}
                     isHiddenMode={isHiddenMode}
                     isFavorite={isFavorite}
@@ -161,14 +189,22 @@ export function FullScreenVideoViewer({
                                 Mở bằng Cine
                             </button>
                         </div>
+                    ) : !blobUrl ? (
+                        <div className="flex items-center justify-center">
+                            <span className="text-slate-400 animate-pulse text-sm font-medium">Đang tải video...</span>
+                        </div>
                     ) : (
                         <video
-                            src={photo.url}
+                            src={blobUrl}
                             poster={photo.thumbnailUrl}
                             controls
                             autoPlay
                             className="max-w-full max-h-full rounded-xl bg-black shadow-2xl"
-                            onError={() => setVideoError(true)}
+                            onError={(e) => {
+                                const err = (e.target as HTMLVideoElement).error;
+                                console.error("Video playback error:", err);
+                                setVideoError(true);
+                            }}
                         >
                             Trình duyệt không hỗ trợ định dạng này.
                         </video>

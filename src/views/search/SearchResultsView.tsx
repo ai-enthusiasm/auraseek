@@ -96,6 +96,8 @@ function SearchResultCard({
     const imgRef   = useRef<HTMLImageElement>(null);
     const [displayW, setDisplayW] = useState(0);
     const [displayH, setDisplayH] = useState(0);
+    const [activeObjectIndex, setActiveObjectIndex] = useState<number | null>(null);
+    const hoverTimerRef = useRef<number | null>(null);
 
     useEffect(() => {
         const el = imgRef.current;
@@ -121,11 +123,66 @@ function SearchResultCard({
         ? localFileUrl(result.file_path.replace(/\.[^.]+$/, ".thumb.jpg"))
         : localFileUrl(result.file_path);
 
+    // Xác định object đang được hover dựa trên toạ độ chuột và bbox
+    const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+        if (!result.detected_objects || result.detected_objects.length === 0) return;
+        if (!imgRef.current || displayW === 0 || displayH === 0 || imgNaturalW === 0 || imgNaturalH === 0) return;
+
+        const rect = e.currentTarget.getBoundingClientRect();
+        const px = e.clientX - rect.left;
+        const py = e.clientY - rect.top;
+
+        // mapping giống SegmentOverlay với objectFit="cover"
+        const s = Math.max(displayW / imgNaturalW, displayH / imgNaturalH);
+        const cropX = (imgNaturalW * s - displayW) / 2;
+        const cropY = (imgNaturalH * s - displayH) / 2;
+
+        let hoveredIndex: number | null = null;
+        result.detected_objects.forEach((obj, idx) => {
+            const x = obj.bbox.x * s - cropX;
+            const y = obj.bbox.y * s - cropY;
+            const w = obj.bbox.w * s;
+            const h = obj.bbox.h * s;
+            const pad = 2;
+            if (px >= x - pad && px <= x + w + pad && py >= y - pad && py <= y + h + pad) {
+                hoveredIndex = idx;
+            }
+        });
+
+        if (hoveredIndex === null) {
+            if (hoverTimerRef.current != null) {
+                window.clearTimeout(hoverTimerRef.current);
+                hoverTimerRef.current = null;
+            }
+            if (activeObjectIndex !== null) {
+                setActiveObjectIndex(null);
+            }
+            return;
+        }
+
+        if (hoverTimerRef.current != null) {
+            window.clearTimeout(hoverTimerRef.current);
+        }
+        hoverTimerRef.current = window.setTimeout(() => {
+            setActiveObjectIndex(hoveredIndex);
+        }, 500);
+    };
+
+    const handleMouseLeave = () => {
+        setHovered(false);
+        if (hoverTimerRef.current != null) {
+            window.clearTimeout(hoverTimerRef.current);
+            hoverTimerRef.current = null;
+        }
+        setActiveObjectIndex(null);
+    };
+
     return (
         <div
             onClick={onClick}
             onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            onMouseMove={handleMouseMove}
+            onMouseLeave={handleMouseLeave}
             className={`relative group cursor-pointer rounded-xl overflow-hidden aspect-square transition-all duration-200 ${
                 isSelected ? "ring-2 ring-primary ring-offset-2 ring-offset-background" : "hover:scale-[1.02]"
             }`}
@@ -147,7 +204,7 @@ function SearchResultCard({
             )}
 
 
-            {/* Segmentation overlay on hover — no face bbox or labels in search results */}
+            {/* Segmentation overlay: chỉ vẽ object đang hover, không vẽ face/label */}
             {hovered && hasOverlays && displayW > 0 && imgNaturalW > 0 && (
                 <SegmentOverlay
                     detectedObjects={result.detected_objects}
@@ -159,6 +216,9 @@ function SearchResultCard({
                     objectFit="cover"
                     showFaces={false}
                     showLabels={false}
+                    showBoxes={false}
+                    activeObjectIndex={activeObjectIndex}
+                    onlyActive={true}
                 />
             )}
 

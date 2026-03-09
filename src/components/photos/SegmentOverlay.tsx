@@ -39,6 +39,8 @@ export interface SegmentOverlayProps {
   showBoxes?: boolean;
   /** If set, only this object index will be highlighted (mask + label) */
   activeObjectIndex?: number | null;
+  /** If true, chỉ vẽ mask cho activeObjectIndex (khi chưa có index thì không vẽ gì) */
+  onlyActive?: boolean;
 }
 
 // Decode [offset, length][] RLE into a Uint8Array of 0/1 flags
@@ -75,6 +77,7 @@ export function SegmentOverlay({
   showMasks  = true,
   showBoxes  = true,
   activeObjectIndex = null,
+  onlyActive = false,
 }: SegmentOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -119,9 +122,10 @@ export function SegmentOverlay({
       pixels: obj.mask_rle?.length ? decodeRle(obj.mask_rle, totalPixels) : null,
     }));
 
-    const masksToRender = activeObjectIndex != null
-      ? masks.filter(m => m.index === activeObjectIndex)
-      : masks;
+    const hasActive = typeof activeObjectIndex === "number";
+    const masksToRender = onlyActive
+      ? (hasActive ? masks.filter(m => m.index === activeObjectIndex) : [])
+      : (hasActive ? masks.filter(m => m.index === activeObjectIndex) : masks);
 
     // ── 2. Fill pixels (single ImageData pass over the display canvas) ─
     if (showMasks && masksToRender.some(m => m.pixels)) {
