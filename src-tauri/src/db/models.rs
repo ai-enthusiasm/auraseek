@@ -5,6 +5,7 @@ use surrealdb::types::{RecordId, SurrealValue, Datetime as SurrealDatetime};
 // ────────────────────── Core document types ──────────────────────
 
 /// App-level config stored in `config_auraseek` table (singleton record).
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct AppConfig {
     pub source_dir: String,
@@ -98,6 +99,7 @@ pub struct MediaRow {
 }
 
 /// Embedding document (vector stored in SurrealDB)
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct EmbeddingDoc {
     pub media_id:  RecordId,
@@ -109,6 +111,7 @@ pub struct EmbeddingDoc {
     pub vec:       Vec<f32>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct EmbeddingRow {
     pub id:        RecordId,
@@ -131,6 +134,7 @@ pub struct PersonDoc {
     pub face_bbox: Option<Bbox>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize, SurrealValue)]
 pub struct PersonRow {
     pub id:        RecordId,
@@ -259,8 +263,9 @@ pub struct PersonGroup {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuplicateGroup {
-    pub sha256: String,
-    pub items:  Vec<DuplicateItem>,
+    pub group_id: String,
+    pub reason:   String,
+    pub items:    Vec<DuplicateItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

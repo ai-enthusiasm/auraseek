@@ -1,5 +1,6 @@
 import {
   Image as ImageIcon,
+  Film,
   Library,
   Star,
   Users,
@@ -16,19 +17,30 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   SidebarFooter,
 } from "@/components/ui/sidebar";
-import { Settings } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Settings, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { SettingsModal } from "@/components/common/SettingsModal";
 
 const mainItems = [
   { title: "Ảnh", url: "#", icon: ImageIcon, key: "timeline" },
+  { title: "Video", url: "#", icon: Film, key: "videos" },
 ];
 
 const collections = [
   { title: "Album", url: "#", icon: Library, key: "albums" },
-  { title: "Ảnh yêu thích", url: "#", icon: Star, key: "favorites" },
+  { 
+    title: "Yêu thích", url: "#", icon: Star, key: "favorites",
+    subItems: [
+      { title: "Ảnh yêu thích", key: "favorite_photos" },
+      { title: "Video yêu thích", key: "favorite_videos" },
+    ]
+  },
   { title: "Người", url: "#", icon: Users, key: "people" },
 ];
 
@@ -89,12 +101,52 @@ export function AppSidebar({
           <SidebarGroupContent>
             <SidebarMenu className="gap-1">
               {collections.map((item) => {
-                const isActive = activeKey === item.key;
+                const isGroupActive = activeKey === item.key || item.subItems?.some(s => activeKey === s.key);
+                
+                if (item.subItems) {
+                  return (
+                    <Collapsible
+                      key={item.title}
+                      asChild
+                      defaultOpen={isGroupActive}
+                      className="group/collapsible"
+                    >
+                      <SidebarMenuItem>
+                        <CollapsibleTrigger asChild>
+                          <SidebarMenuButton
+                            className={`rounded-full h-11 px-4 transition-all text-[14px] ${isGroupActive ? 'bg-primary/10 text-primary font-bold hover:bg-primary/20' : 'hover:bg-muted text-muted-foreground/80 hover:text-foreground font-medium'}`}
+                            tooltip={item.title}
+                          >
+                            <item.icon className="w-[1.125rem] h-[1.125rem]" />
+                            <span>{item.title}</span>
+                            <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                          </SidebarMenuButton>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <SidebarMenuSub className="ml-5 mt-1 border-l-2 border-border/40 pl-3">
+                            {item.subItems.map((sub) => (
+                               <SidebarMenuSubItem key={sub.key}>
+                                 <SidebarMenuSubButton
+                                   isActive={activeKey === sub.key}
+                                   onClick={() => onNavClick?.(sub.key)}
+                                   className={`rounded-full px-3 py-1.5 cursor-pointer text-[13px] ${activeKey === sub.key ? 'text-primary font-bold' : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'}`}
+                                 >
+                                   {sub.title}
+                                 </SidebarMenuSubButton>
+                               </SidebarMenuSubItem>
+                            ))}
+                          </SidebarMenuSub>
+                        </CollapsibleContent>
+                      </SidebarMenuItem>
+                    </Collapsible>
+                  );
+                }
+
                 return (
                   <SidebarMenuItem key={item.title}>
                     <SidebarMenuButton
                       asChild
-                      className={`rounded-full h-11 px-4 transition-all text-[14px] ${isActive ? 'bg-primary/10 text-primary font-bold hover:bg-primary/20' : 'hover:bg-muted text-muted-foreground/80 hover:text-foreground font-medium'}`}
+                      className={`rounded-full h-11 px-4 transition-all text-[14px] ${isGroupActive ? 'bg-primary/10 text-primary font-bold hover:bg-primary/20' : 'hover:bg-muted text-muted-foreground/80 hover:text-foreground font-medium'}`}
                       onClick={() => onNavClick?.(item.key)}
                     >
                       <a href={item.url} className="flex items-center gap-4">

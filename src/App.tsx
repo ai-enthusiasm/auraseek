@@ -460,13 +460,35 @@ function App() {
             onBack={() => setRoute({ view: route.payload?.type === "album" ? "albums" : "people" })}
           />
         );
-      case "favorites":
+      case "favorite_photos":
         return (
           <FilteredGalleryView
             title="Ảnh yêu thích"
             filterType="favorites"
+            filterPayload="photos"
             photos={photos}
             onBack={() => setRoute({ view: "timeline" })}
+          />
+        );
+      case "favorite_videos":
+        return (
+          <FilteredGalleryView
+            title="Video yêu thích"
+            filterType="favorites"
+            filterPayload="videos"
+            photos={photos}
+            onBack={() => setRoute({ view: "timeline" })}
+          />
+        );
+      case "videos":
+        return (
+          <TimelineView
+            timelineGroups={timelineGroups}
+            photos={photos}
+            searchQuery={searchQuery}
+            isLoading={!isInitialized}
+            selectionMode={selectionMode}
+            mediaType="video"
           />
         );
       case "trash":
@@ -482,6 +504,7 @@ function App() {
             searchQuery={searchQuery}
             isLoading={!isInitialized}
             selectionMode={selectionMode}
+            mediaType="photo"
           />
         );
     }
@@ -502,7 +525,7 @@ function App() {
 
           {/* Global drag-over indicator */}
           {isDragOver && (
-            <div className="fixed inset-0 z-[100] pointer-events-none flex items-center justify-center bg-indigo-500/10 backdrop-blur-[2px] border-4 border-dashed border-indigo-400/60 rounded-xl m-2">
+            <div className="fixed inset-0 z-100 pointer-events-none flex items-center justify-center bg-indigo-500/10 backdrop-blur-[2px] border-4 border-dashed border-indigo-400/60 rounded-xl m-2">
               <div className="bg-background/90 rounded-2xl px-8 py-5 shadow-2xl border border-indigo-400/30 text-center">
                 <p className="text-lg font-semibold text-indigo-400">Thả ảnh vào đây</p>
                 <p className="text-sm text-muted-foreground mt-1">Ảnh sẽ được lưu vào thư mục nguồn và xử lý AI tự động</p>

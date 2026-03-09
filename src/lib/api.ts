@@ -85,7 +85,8 @@ export interface DuplicateItem {
 }
 
 export interface DuplicateGroup {
-    sha256: string;
+    group_id: string;
+    reason: string;
     items: DuplicateItem[];
 }
 
@@ -259,6 +260,26 @@ export const AuraSeekApi = {
 
     async authenticateOs(): Promise<boolean> {
         return invoke<boolean>("cmd_authenticate_os");
+    },
+
+    /** Dọn dẹp các ảnh/video không còn tồn tại trên đĩa. Trả về số lượng đã xóa. */
+    async cleanupDatabase(): Promise<number> {
+        return invoke<number>("cmd_cleanup_database");
+    },
+
+    /** Đặt lại database: xóa toàn bộ dữ liệu (ảnh trên đĩa không bị xóa). */
+    async resetDatabase(): Promise<void> {
+        return invoke<void>("cmd_reset_database");
+    },
+
+    /** Lấy tên thiết bị đang lưu trữ thư viện ảnh (hostname / tên máy). */
+    async getDeviceName(): Promise<string> {
+        return invoke<string>("cmd_get_device_name");
+    },
+
+    /** Lấy dung lượng file theo path tuyệt đối (bytes). */
+    async getFileSize(path: string): Promise<number> {
+        return invoke<number>("cmd_get_file_size", { path });
     },
 };
 

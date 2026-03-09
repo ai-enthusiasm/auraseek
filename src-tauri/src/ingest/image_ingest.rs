@@ -12,8 +12,8 @@ use crate::db::models::{MediaDoc, FileInfo, MediaMetadata, ObjectEntry, FaceEntr
 use crate::processor::AuraSeekEngine;
 use crate::ingest::video_ingest;
 
-const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "avif"];
-const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
+pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "avif"];
+pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
 
 /// Scan a source folder and ingest all images/videos.
 pub async fn ingest_folder(
@@ -224,7 +224,7 @@ pub async fn ingest_folder(
 async fn scan_single_file(
     path: &Path,
     db: &Arc<Mutex<Option<SurrealDb>>>,
-    source_dir: &str,
+    _source_dir: &str,
     media_type: &str,
 ) -> Result<Option<String>> {
     let sha256 = compute_sha256(path)?;

@@ -84,7 +84,7 @@ export function PhotoCard({
       onClick={selectionMode ? handleSelect : onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className="group relative block aspect-[4/3] overflow-hidden bg-background"
+      className="group relative block aspect-4/3 overflow-hidden bg-background"
     >
       <div className={cn(
         "w-full h-full transition-all duration-200 ease-out relative",
@@ -121,7 +121,7 @@ export function PhotoCard({
 
         {/* ── Segmentation overlay (images only) ───────────────── */}
         {showBbox && hovered && hasOverlays && displayW > 0 && imgNaturalW > 0 && (
-          <div className="absolute inset-0 pointer-events-none z-[5]">
+          <div className="absolute inset-0 pointer-events-none z-5">
             <SegmentOverlay
               detectedObjects={photo.detectedObjects}
               detectedFaces={photo.detectedFaces}
@@ -132,6 +132,8 @@ export function PhotoCard({
               objectFit="cover"
               showFaces={overlayShowFaces}
               showLabels={overlayShowLabels}
+              showMasks
+              showBoxes
             />
           </div>
         )}

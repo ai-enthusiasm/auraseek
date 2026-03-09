@@ -1,15 +1,51 @@
 import type { Photo } from "@/types/photo.type";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Calendar, Smartphone, HardDrive, Tag, Plus, UserPlus, Image as ImageIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { AuraSeekApi } from "@/lib/api";
 
 export function PhotoInfoPanel({ photo }: { photo: Photo }) {
   const [description, setDescription] = useState("");
+  const [deviceName, setDeviceName] = useState<string | null>(null);
+  const [effectiveSizeBytes, setEffectiveSizeBytes] = useState<number>(photo.sizeBytes || 0);
 
   const takenDate = new Date(photo.takenAt);
   const formattedDate = new Intl.DateTimeFormat("vi-VN", { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(takenDate);
   const formattedTime = new Intl.DateTimeFormat("vi-VN", { hour: '2-digit', minute: '2-digit' }).format(takenDate);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    // Cập nhật size từ prop trước
+    setEffectiveSizeBytes(photo.sizeBytes || 0);
+
+    // Lấy tên thiết bị hiện tại (hostname / tên máy)
+    AuraSeekApi.getDeviceName()
+      .then((name) => {
+        if (!cancelled) setDeviceName(name);
+      })
+      .catch(() => {
+        if (!cancelled) setDeviceName(null);
+      });
+
+    // Nếu sizeBytes đang là 0 nhưng có filePath, hỏi backend để lấy dung lượng thật
+    if (!photo.sizeBytes && photo.filePath) {
+      AuraSeekApi.getFileSize(photo.filePath)
+        .then((size) => {
+          if (!cancelled) setEffectiveSizeBytes(size);
+        })
+        .catch(() => {
+          // ignore – giữ 0 nếu không đọc được
+        });
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [photo.id, photo.sizeBytes, photo.filePath]);
+
+  const sizeInMb = effectiveSizeBytes > 0 ? (effectiveSizeBytes / 1048576).toFixed(2) : "0.00";
 
   return (
     <ScrollArea className="h-full w-full">
@@ -39,9 +75,13 @@ export function PhotoInfoPanel({ photo }: { photo: Photo }) {
         <div className="flex gap-4 items-start px-3">
           <Smartphone className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
           <div className="flex-1">
-            <div className="text-sm font-medium">{photo.cameraModel || "Không có thông tin thiết bị"}</div>
+            <div className="text-sm font-medium">
+              {deviceName || photo.cameraModel || "Thiết bị này"}
+            </div>
             {photo.iso && <div className="text-xs text-muted-foreground mt-0.5">ƒ/1.8 • 1/120 • {photo.focalLength}mm • ISO {photo.iso}</div>}
-            <div className="text-xs text-muted-foreground mt-0.5">{photo.width} × {photo.height} • {(photo.sizeBytes / 1048576).toFixed(1)} MB</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              {photo.width} × {photo.height} • {sizeInMb} MB
+            </div>
           </div>
         </div>
 
@@ -95,8 +135,12 @@ export function PhotoInfoPanel({ photo }: { photo: Photo }) {
           <HardDrive className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
           <div className="flex-1">
             <div className="text-sm">Đã sao lưu ở chất lượng gốc</div>
-            <div className="text-xs text-muted-foreground mt-0.5">Ảnh này chiếm {(photo.sizeBytes / 1048576).toFixed(1)} MB dung lượng bộ nhớ</div>
-            <div className="text-xs text-muted-foreground mt-1 break-all">Path: /home/phuoccanh/Pictures/AuraSeek/{photo.id}.jpg</div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              {photo.type === "video" ? "Video" : "Ảnh"} này chiếm {sizeInMb} MB dung lượng bộ nhớ
+            </div>
+            {photo.filePath && (
+              <div className="text-xs text-muted-foreground mt-1 break-all font-mono">Path: {photo.filePath}</div>
+            )}
           </div>
         </div>
 

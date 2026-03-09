@@ -10,8 +10,8 @@ export function GlassCard({ children, className }: GlassCardProps) {
   return (
     <div
       className={cn(
-        "relative overflow-hidden rounded-xl border border-white/10 bg-gradient-to-br from-white/5 to-white/0 p-3 shadow-[0_18px_60px_rgba(15,23,42,0.45)] backdrop-blur-2xl dark:border-white/10 dark:from-white/10 dark:to-white/0",
-        "transition-transform transition-shadow duration-300 ease-out",
+        "relative overflow-hidden rounded-xl border border-white/10 bg-linear-to-br from-white/5 to-white/0 p-3 shadow-[0_18px_60px_rgba(15,23,42,0.45)] backdrop-blur-2xl dark:border-white/10 dark:from-white/10 dark:to-white/0",
+        "transition-shadow duration-300 ease-out",
         "hover:shadow-[0_28px_80px_rgba(15,23,42,0.9)] hover:-translate-y-0.5",
         className,
       )}

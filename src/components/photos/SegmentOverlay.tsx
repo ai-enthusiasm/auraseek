@@ -31,6 +31,14 @@ export interface SegmentOverlayProps {
   showFaces?: boolean;
   /** Whether to draw object/face labels + confidence (default: true) */
   showLabels?: boolean;
+  /** Current zoom/view scale — use this to adjust stroke/font size to stay crisp */
+  viewScale?: number;
+  /** Whether to render segmentation masks (default: true) */
+  showMasks?: boolean;
+  /** Whether to render bbox rectangles (objects + faces) (default: true) */
+  showBoxes?: boolean;
+  /** If set, only this object index will be highlighted (mask + label) */
+  activeObjectIndex?: number | null;
 }
 
 // Decode [offset, length][] RLE into a Uint8Array of 0/1 flags
@@ -63,6 +71,10 @@ export function SegmentOverlay({
   objectFit  = "cover",
   showFaces  = true,
   showLabels = true,
+  viewScale  = 1,
+  showMasks  = true,
+  showBoxes  = true,
+  activeObjectIndex = null,
 }: SegmentOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -101,13 +113,18 @@ export function SegmentOverlay({
 
     // ── 1. Decode all object masks ────────────────────────────────────
     const masks = detectedObjects.map((obj, i) => ({
+      index: i,
       obj,
       rgb: PALETTE[i % PALETTE.length],
       pixels: obj.mask_rle?.length ? decodeRle(obj.mask_rle, totalPixels) : null,
     }));
 
+    const masksToRender = activeObjectIndex != null
+      ? masks.filter(m => m.index === activeObjectIndex)
+      : masks;
+
     // ── 2. Fill pixels (single ImageData pass over the display canvas) ─
-    if (masks.some(m => m.pixels)) {
+    if (showMasks && masksToRender.some(m => m.pixels)) {
       const imageData = ctx.createImageData(displayW, displayH);
       const d = imageData.data;
 
@@ -118,7 +135,7 @@ export function SegmentOverlay({
           if (ox < 0 || ox >= imgNaturalW || oy < 0 || oy >= imgNaturalH) continue;
 
           const midx = oy * imgNaturalW + ox;
-          for (const { pixels, rgb } of masks) {
+          for (const { pixels, rgb } of masksToRender) {
             if (pixels?.[midx]) {
               const b = (py * displayW + px) * 4;
               d[b]     = rgb[0];
@@ -134,30 +151,49 @@ export function SegmentOverlay({
     }
 
     // ── 3. Draw crisp mask borders ────────────────────────────────────
-    for (const { pixels, rgb } of masks) {
-      if (!pixels) continue;
-      ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.92)`;
+    if (showMasks) {
+      for (const { pixels, rgb } of masksToRender) {
+        if (!pixels) continue;
+        ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.92)`;
 
-      for (let py = 1; py < displayH - 1; py++) {
-        for (let px = 1; px < displayW - 1; px++) {
-          const ox = Math.floor((px + cropX) / scaleX);
-          const oy = Math.floor((py + cropY) / scaleY);
-          if (ox < 0 || ox >= imgNaturalW || oy < 0 || oy >= imgNaturalH) continue;
-          if (!pixels[oy * imgNaturalW + ox]) continue;
+        for (let py = 1; py < displayH - 1; py++) {
+          for (let px = 1; px < displayW - 1; px++) {
+            const ox = Math.floor((px + cropX) / scaleX);
+            const oy = Math.floor((py + cropY) / scaleY);
+            if (ox < 0 || ox >= imgNaturalW || oy < 0 || oy >= imgNaturalH) continue;
+            if (!pixels[oy * imgNaturalW + ox]) continue;
 
-          const isEdge =
-            !pixels[oy * imgNaturalW + Math.max(ox - 1, 0)] ||
-            !pixels[oy * imgNaturalW + Math.min(ox + 1, imgNaturalW - 1)] ||
-            !pixels[Math.max(oy - 1, 0) * imgNaturalW + ox] ||
-            !pixels[Math.min(oy + 1, imgNaturalH - 1) * imgNaturalW + ox];
+            const isEdge =
+              !pixels[oy * imgNaturalW + Math.max(ox - 1, 0)] ||
+              !pixels[oy * imgNaturalW + Math.min(ox + 1, imgNaturalW - 1)] ||
+              !pixels[Math.max(oy - 1, 0) * imgNaturalW + ox] ||
+              !pixels[Math.min(oy + 1, imgNaturalH - 1) * imgNaturalW + ox];
 
-          if (isEdge) ctx.fillRect(px, py, 2, 2);
+            if (isEdge) {
+              const size = Math.max(1, 2 / viewScale);
+              ctx.fillRect(px - size / 2, py - size / 2, size, size);
+            }
+          }
         }
       }
     }
 
+    // ── 3b. Object bbox rectangles (for all objects) ──────────────────
+    if (showBoxes) {
+      masks.forEach(({ obj, rgb }) => {
+        const x = obj.bbox.x * scaleX - cropX;
+        const y = obj.bbox.y * scaleY - cropY;
+        const w = obj.bbox.w * scaleX;
+        const h = obj.bbox.h * scaleY;
+
+        ctx.strokeStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.95)`;
+        ctx.lineWidth   = Math.max(1, 2 / viewScale);
+        ctx.strokeRect(x, y, w, h);
+      });
+    }
+
     // ── 4. Face bbox fills (violet) ───────────────────────────────────
-    if (showFaces) {
+    if (showFaces && showBoxes) {
       for (const face of detectedFaces) {
         const x = face.bbox.x * scaleX - cropX;
         const y = face.bbox.y * scaleY - cropY;
@@ -175,20 +211,23 @@ export function SegmentOverlay({
     // ── 5. Labels ─────────────────────────────────────────────────────
     if (showLabels) {
       const label = (text: string, bx: number, by: number, rgb: [number,number,number]) => {
-        ctx.font = "bold 11px system-ui, sans-serif";
+        const fontSize = Math.max(6, 11 / viewScale);
+        ctx.font = `bold ${fontSize}px system-ui, sans-serif`;
         const tw  = ctx.measureText(text).width;
-        const pad = 4;
-        const lh  = 17;
+        const pad = 4 / viewScale;
+        const lh  = 17 / viewScale;
         const lx  = Math.max(0, Math.min(bx, displayW - tw - pad * 2));
-        const ly  = by > lh + 2 ? by - lh - 2 : by + 2;
+        const ly  = by > lh + 2 / viewScale ? by - lh - 2 / viewScale : by + 2 / viewScale;
         ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.88)`;
         ctx.fillRect(lx, ly, tw + pad * 2, lh);
         ctx.fillStyle = "#fff";
-        ctx.fillText(text, lx + pad, ly + lh - 4);
+        ctx.fillText(text, lx + pad, ly + lh - 4 / viewScale);
       };
 
-      masks.forEach(({ obj, rgb, pixels }) => {
-        if (!pixels) return;
+      const labelMasks = activeObjectIndex != null ? masksToRender : masks;
+
+      labelMasks.forEach(({ obj, rgb, pixels }) => {
+        if (showMasks && !pixels) return;
         label(
           `${obj.class_name} ${(obj.conf * 100).toFixed(0)}%`,
           obj.bbox.x * scaleX - cropX,
@@ -209,7 +248,21 @@ export function SegmentOverlay({
       }
     }
 
-  }, [detectedObjects, detectedFaces, imgNaturalW, imgNaturalH, displayW, displayH, objectFit, showFaces, showLabels]);
+  }, [
+    detectedObjects,
+    detectedFaces,
+    imgNaturalW,
+    imgNaturalH,
+    displayW,
+    displayH,
+    objectFit,
+    showFaces,
+    showLabels,
+    showMasks,
+    showBoxes,
+    viewScale,
+    activeObjectIndex,
+  ]);
 
   return (
     <canvas

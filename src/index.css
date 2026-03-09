@@ -145,3 +145,40 @@ body,
     @apply bg-background text-foreground;
   }
 }
+
+@layer utilities {
+  .custom-zoom-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    background: transparent;
+  }
+  
+  .custom-zoom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    background-color: white;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  
+  .custom-zoom-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.15);
+  }
+  
+  .custom-zoom-slider::-moz-range-thumb {
+    width: 14px;
+    height: 14px;
+    background-color: white;
+    border: none;
+    border-radius: 50%;
+    cursor: pointer;
+    transition: transform 0.1s;
+  }
+  
+  .custom-zoom-slider::-moz-range-thumb:hover {
+    transform: scale(1.15);
+  }
+}
