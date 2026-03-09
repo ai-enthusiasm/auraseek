@@ -22,6 +22,9 @@ export function FullScreenPhotoViewer({
         const saved = localStorage.getItem(`auraseek_bbox_${photo.id}`);
         return saved === "true";
     });
+  // Mask mặc định tắt để không gây bất ngờ; người dùng bật bằng icon cọ vẽ.
+  const [showMask, setShowMask] = useState(false);
+  const [activeObjectIndex, setActiveObjectIndex] = useState<number | null>(null);
     const [isFavorite, setIsFavorite] = useState(photo.favorite || false);
     const [isSharing, setIsSharing] = useState(false);
 
@@ -190,6 +193,38 @@ export function FullScreenPhotoViewer({
         e.currentTarget.releasePointerCapture(e.pointerId);
     };
 
+  // ─── Object/face hit-testing for "press to mask" ─────────────────────
+  const handleObjectPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!imgRef.current || !photo.detectedObjects || photo.detectedObjects.length === 0) {
+      return;
+    }
+    const imgBox = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - imgBox.left;
+    const py = e.clientY - imgBox.top;
+    if (px < 0 || py < 0 || px > imgBox.width || py > imgBox.height) return;
+
+    const natW = photo.width || imgRef.current.naturalWidth || 1;
+    const natH = photo.height || imgRef.current.naturalHeight || 1;
+    const scaleX = imgBox.width / natW;
+    const scaleY = imgBox.height / natH;
+    const ox = px / scaleX;
+    const oy = py / scaleY;
+
+    const idx = photo.detectedObjects.findIndex((obj) => {
+      const { x, y, w, h } = obj.bbox;
+      return ox >= x && ox <= x + w && oy >= y && oy <= y + h;
+    });
+
+    if (idx >= 0) {
+      // Tạm thời chỉ highlight object này; không đụng tới state nút cọ.
+      setActiveObjectIndex(idx);
+    }
+  };
+
+  const handleObjectPointerUp = () => {
+    setActiveObjectIndex(null);
+  };
+
     const hasOverlays = Boolean(
         (photo.detectedObjects && photo.detectedObjects.length > 0) ||
             (photo.detectedFaces && photo.detectedFaces.length > 0)
@@ -267,6 +302,10 @@ export function FullScreenPhotoViewer({
         localStorage.setItem(`auraseek_bbox_${photo.id}`, newVal.toString());
     };
 
+  const handleToggleMask = () => {
+    setShowMask((prev) => !prev);
+  };
+
     return (
         <div className="fixed inset-0 z-50 flex bg-background w-full h-full text-foreground">
             <div className="relative flex-1 flex flex-col overflow-hidden bg-black transition-all">
@@ -274,6 +313,8 @@ export function FullScreenPhotoViewer({
                     hasOverlays={hasOverlays}
                     showBbox={showBbox}
                     onToggleBbox={handleToggleBbox}
+                    showMask={showMask}
+                    onToggleMask={handleToggleMask}
                     scale={scale}
                     onZoomClick={handleDoubleClick}
                     isTrashMode={isTrashMode}
@@ -313,32 +354,43 @@ export function FullScreenPhotoViewer({
                         }}
                     >
                         <div className="relative pointer-events-auto shadow-2xl" style={{ width: renderedW, height: renderedH }}>
-                            <img
-                                ref={imgRef}
-                                src={photo.url}
-                                alt="View"
-                                className="w-full h-full object-contain"
-                                draggable={false}
-                                onLoad={() => {
-                                    setDimensions({
-                                        width: containerRef.current?.clientWidth || 0,
-                                        height: containerRef.current?.clientHeight || 0,
-                                    });
-                                }}
-                            />
-                            {showBbox && hasOverlays && renderedW > 0 && (
-                                <SegmentOverlay
-                                    detectedObjects={photo.detectedObjects}
-                                    detectedFaces={photo.detectedFaces}
-                                    imgNaturalW={photo.width || imgRef.current?.naturalWidth || 0}
-                                    imgNaturalH={photo.height || imgRef.current?.naturalHeight || 0}
-                                    displayW={renderedW}
-                                    displayH={renderedH}
-                                    objectFit="contain"
-                                    showFaces
-                                    showLabels
+                            <div
+                                className="w-full h-full relative"
+                                onPointerDown={handleObjectPointerDown}
+                                onPointerUp={handleObjectPointerUp}
+                                onPointerLeave={handleObjectPointerUp}
+                            >
+                                <img
+                                    ref={imgRef}
+                                    src={photo.url}
+                                    alt="View"
+                                    className="w-full h-full object-contain"
+                                    draggable={false}
+                                    onLoad={() => {
+                                        setDimensions({
+                                            width: containerRef.current?.clientWidth || 0,
+                                            height: containerRef.current?.clientHeight || 0,
+                                        });
+                                    }}
                                 />
-                            )}
+                                {(showBbox || showMask || activeObjectIndex != null) && hasOverlays && renderedW > 0 && (
+                                    <SegmentOverlay
+                                        detectedObjects={photo.detectedObjects}
+                                        detectedFaces={photo.detectedFaces}
+                                        imgNaturalW={photo.width || imgRef.current?.naturalWidth || 0}
+                                        imgNaturalH={photo.height || imgRef.current?.naturalHeight || 0}
+                                        displayW={renderedW}
+                                        displayH={renderedH}
+                                        objectFit="contain"
+                                        showFaces={showBbox}
+                                        showLabels
+                                        showMasks={showMask || activeObjectIndex != null}
+                                        showBoxes={showBbox}
+                                        viewScale={scale}
+                                        activeObjectIndex={activeObjectIndex}
+                                    />
+                                )}
+                            </div>
                         </div>
                     </div>
 

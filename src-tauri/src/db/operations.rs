@@ -777,25 +777,6 @@ impl DbOperations {
         .await?;
         Ok(res.take(0)?)
     }
-
-    pub async fn delete_media_by_name(db: &SurrealDb, name: &str) -> Result<()> {
-        // Find the record first to get the ID for embedding deletion
-        let mut res = db.db.query("SELECT id FROM media WHERE file.name = $name")
-            .bind(("name", name.to_string()))
-            .await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct IdRow { id: RecordId }
-        let rows: Vec<IdRow> = res.take(0)?;
-        
-        for r in rows {
-            let id_str = record_id_to_string(&r.id);
-            // Delete embedding
-            db.db.query(format!("DELETE embedding WHERE media_id = {}", id_str)).await?.check()?;
-            // Delete media
-            db.db.query(format!("DELETE {}", id_str)).await?.check()?;
-        }
-        Ok(())
-    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────

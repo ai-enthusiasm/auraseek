@@ -271,6 +271,16 @@ export const AuraSeekApi = {
     async resetDatabase(): Promise<void> {
         return invoke<void>("cmd_reset_database");
     },
+
+    /** Lấy tên thiết bị đang lưu trữ thư viện ảnh (hostname / tên máy). */
+    async getDeviceName(): Promise<string> {
+        return invoke<string>("cmd_get_device_name");
+    },
+
+    /** Lấy dung lượng file theo path tuyệt đối (bytes). */
+    async getFileSize(path: string): Promise<number> {
+        return invoke<number>("cmd_get_file_size", { path });
+    },
 };
 
 export function localFileUrl(filePath: string): string {

@@ -132,6 +132,8 @@ export function PhotoCard({
               objectFit="cover"
               showFaces={overlayShowFaces}
               showLabels={overlayShowLabels}
+              showMasks
+              showBoxes
             />
           </div>
         )}

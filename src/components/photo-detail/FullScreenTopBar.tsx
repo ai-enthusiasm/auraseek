@@ -1,5 +1,5 @@
 import type React from "react";
-import { ArrowLeft, Info, Share2, Star, Trash2, Eye, EyeOff, ZoomIn, Undo, Scan } from "lucide-react";
+import { ArrowLeft, Info, Share2, Star, Trash2, Eye, EyeOff, ZoomIn, Undo, Scan, Paintbrush } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 
@@ -7,6 +7,8 @@ interface FullScreenTopBarProps {
     hasOverlays: boolean;
     showBbox: boolean;
     onToggleBbox: () => void;
+    showMask: boolean;
+    onToggleMask: () => void;
     scale: number;
     onZoomClick: (e: React.MouseEvent) => void;
     isTrashMode: boolean;
@@ -29,6 +31,8 @@ export function FullScreenTopBar({
     hasOverlays,
     showBbox,
     onToggleBbox,
+    showMask,
+    onToggleMask,
     scale,
     onZoomClick,
     isTrashMode,
@@ -67,25 +71,47 @@ export function FullScreenTopBar({
             </div>
             <div className="flex items-center gap-1">
                 {hasOverlays && (
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={onToggleBbox}
-                                className={`rounded-full transition-colors ${
-                                    showBbox
-                                        ? "bg-white/20 text-white hover:bg-white/30"
-                                        : "text-white/80 hover:text-white hover:bg-white/20"
-                                }`}
-                            >
-                                <Scan className="w-5 h-5" />
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent side="bottom" className="text-xs">
-                            <p>{showBbox ? "Ẩn khung AI" : "Hiện khung AI"}</p>
-                        </TooltipContent>
-                    </Tooltip>
+                    <>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={onToggleBbox}
+                                    className={`rounded-full transition-colors ${
+                                        showBbox
+                                            ? "bg-white/20 text-white hover:bg-white/30"
+                                            : "text-white/80 hover:text-white hover:bg-white/20"
+                                    }`}
+                                >
+                                    <Scan className="w-5 h-5" />
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="text-xs">
+                                <p>{showBbox ? "Ẩn khung AI (bbox)" : "Hiện khung AI (bbox)"}</p>
+                            </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    onClick={onToggleMask}
+                                    className={`rounded-full transition-colors ${
+                                        showMask
+                                            ? "bg-white/20 text-white hover:bg-white/30"
+                                            : "text-white/80 hover:text-white hover:bg-white/20"
+                                    }`}
+                                >
+                                    <Paintbrush className="w-5 h-5" />
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" className="text-xs">
+                                <p>{showMask ? "Ẩn mask AI" : "Hiện mask AI"}</p>
+                            </TooltipContent>
+                        </Tooltip>
+                    </>
                 )}
 
                 {!isVideo && (

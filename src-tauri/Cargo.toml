@@ -8,6 +8,9 @@ edition = "2024"
 [dependencies]
 tauri              = { version = "2", features = ["protocol-asset"] }
 tauri-plugin-opener = "2"
+rayon              = "1.11"
+notify             = "6"
+notify-debouncer-full = "0.3"
 ort                = "2.0.0-rc.9"
 image              = "0.24"
 imageproc          = "0.23"
