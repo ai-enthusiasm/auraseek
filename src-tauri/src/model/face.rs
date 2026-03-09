@@ -66,32 +66,33 @@ impl FaceModel {
     }
 
     /// Detect faces from an already-loaded Mat (e.g. a person crop).
+    ///
+    /// To avoid OpenCV DNN shape errors on some extreme aspect ratios, we
+    /// always resize to the fixed detector input size that was configured
+    /// when the model was created (320x320). Dynamic resizing of the
+    /// detector network has been removed for stability.
+    ///
     /// Returns FaceGroups with bbox in the coordinate space of the input frame.
     pub fn detect_from_mat(&mut self, frame: &Mat, db: &FaceDb) -> Result<Vec<FaceGroup>> {
         if frame.empty() { return Ok(vec![]); }
-        
-        let max_dim = 640.0;
+
         let size = frame.size()?;
         let (w, h) = (size.width as f32, size.height as f32);
-        if w < 20.0 || h < 20.0 { return Ok(vec![]); }
-        let scale = if w > h { max_dim / w } else { max_dim / h }.min(1.0);
-        
-        let new_w = (((w * scale) as i32) / 32 * 32).max(32);
-        let new_h = (((h * scale) as i32) / 32 * 32).max(32);
-        let mut resized = Mat::default();
-        opencv::imgproc::resize(frame, &mut resized, Size::new(new_w, new_h), 0.0, 0.0, opencv::imgproc::INTER_LINEAR)?;
-
-        if resized.size()? != self.detector_size {
-            self.detector_size = resized.size()?;
-            let (backend, target) = if opencv::core::get_cuda_enabled_device_count()? > 0 {
-                (opencv::dnn::DNN_BACKEND_CUDA, opencv::dnn::DNN_TARGET_CUDA)
-            } else {
-                (opencv::dnn::DNN_BACKEND_OPENCV, opencv::dnn::DNN_TARGET_CPU)
-            };
-            self.detector = FaceDetectorYN::create(
-                &self.detector_path, "", self.detector_size, SCORE_THRESHOLD, NMS_THRESHOLD, TOP_K, backend, target
-            )?;
+        if w < 20.0 || h < 20.0 {
+            return Ok(vec![]);
         }
+
+        // Always resize to the detector's fixed input size.
+        let target_size = self.detector_size;
+        let mut resized = Mat::default();
+        opencv::imgproc::resize(
+            frame,
+            &mut resized,
+            target_size,
+            0.0,
+            0.0,
+            opencv::imgproc::INTER_LINEAR,
+        )?;
 
         let mut faces_mat = Mat::default();
         self.detector.detect(&resized, &mut faces_mat)?;
@@ -130,8 +131,11 @@ impl FaceModel {
         }
 
         let mut groups = Vec::new();
-        let ratio_x = w / new_w as f32;
-        let ratio_y = h / new_h as f32;
+        // Map bboxes from resized detector space back to original frame space.
+        let target_w = self.detector_size.width as f32;
+        let target_h = self.detector_size.height as f32;
+        let ratio_x = if target_w > 0.0 { w / target_w } else { 1.0 };
+        let ratio_y = if target_h > 0.0 { h / target_h } else { 1.0 };
 
         for face in kept.into_iter() {
             let mut aligned = Mat::default();

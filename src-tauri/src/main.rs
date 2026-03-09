@@ -7,6 +7,7 @@ mod search;
 mod debug_cli;
 mod surreal_sidecar;
 mod downloader;
+mod fs_watcher;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -57,6 +58,9 @@ pub struct AppState {
     /// Models: <data_dir>/models/   Tokenizer: <data_dir>/tokenizer/
     /// SurrealDB:  <data_dir>/db/   Logs: <data_dir>/auraseek.log
     pub data_dir:      std::sync::Mutex<std::path::PathBuf>,
+    /// Handle for the file system watcher. Kept alive as long as a source_dir
+    /// is configured. Replaced when source_dir changes.
+    pub watcher_handle: std::sync::Mutex<Option<fs_watcher::FsWatcherHandle>>,
 }
 
 impl AppState {
@@ -74,6 +78,7 @@ impl AppState {
             sync_status:   Arc::new(Mutex::new(SyncStatus::default())),
             surreal_child: std::sync::Mutex::new(None),
             data_dir:      std::sync::Mutex::new(std::path::PathBuf::from(".")),
+            watcher_handle: std::sync::Mutex::new(None),
         }
     }
 }
@@ -92,6 +97,37 @@ fn available_ram_percent() -> f64 {
         (avail as f64 / total as f64) * 100.0
     } else {
         50.0 // assume OK if we can't read
+    }
+}
+
+/// Stop the previous FS watcher (if any) and start a new one for `source_dir`.
+fn restart_fs_watcher(state: &AppState, source_dir: &str) {
+    // Drop the old watcher first
+    if let Ok(mut guard) = state.watcher_handle.lock() {
+        if let Some(old) = guard.take() {
+            old.stop();
+            crate::log_info!("👁️  Previous FS watcher stopped");
+        }
+    }
+
+    if source_dir.is_empty() {
+        return;
+    }
+
+    match fs_watcher::start_watching(
+        source_dir.to_string(),
+        state.db.clone(),
+        state.engine.clone(),
+        state.sync_status.clone(),
+    ) {
+        Ok(handle) => {
+            if let Ok(mut guard) = state.watcher_handle.lock() {
+                *guard = Some(handle);
+            }
+        }
+        Err(e) => {
+            crate::log_warn!("⚠️ Failed to start FS watcher: {}", e);
+        }
     }
 }
 
@@ -217,6 +253,7 @@ async fn cmd_get_source_dir(state: State<'_, AppState>) -> Result<String, String
 }
 
 /// Set source directory and persist to config_auraseek. Then trigger auto-scan.
+/// Also (re)starts the FS watcher on the new directory.
 #[tauri::command]
 async fn cmd_set_source_dir(
     dir: String,
@@ -229,6 +266,10 @@ async fn cmd_set_source_dir(
     }
     *state.source_dir.lock().await = dir.clone();
     crate::log_info!("📂 source_dir updated to: {}", dir);
+
+    // (Re)start FS watcher on the new source directory
+    restart_fs_watcher(&state, &dir);
+
     Ok(())
 }
 
@@ -274,6 +315,9 @@ async fn cmd_auto_scan(state: State<'_, AppState>) -> Result<String, String> {
         let mut st = sync_arc.lock().await;
         *st = SyncStatus { state: "syncing".into(), processed: 0, total: 0, message: "Đang đồng bộ dữ liệu...".into() };
     }
+
+    // Start FS watcher so new files added during or after the scan are picked up
+    restart_fs_watcher(&state, &source_dir);
 
     tokio::spawn(async move {
         let result = ingest::image_ingest::ingest_folder(
@@ -780,6 +824,14 @@ pub fn run() {
                 // Only terminate if no other windows remain
                 if app.webview_windows().is_empty() {
                     let state = app.state::<AppState>();
+                    // Stop FS watcher
+                    if let Ok(mut guard) = state.watcher_handle.lock() {
+                        if let Some(handle) = guard.take() {
+                            handle.stop();
+                            crate::log_info!("🛑 FS watcher stopped on exit");
+                        }
+                    }
+                    // Kill SurrealDB sidecar
                     if let Ok(mut guard) = state.surreal_child.lock() {
                         if let Some(mut child) = guard.take() {
                             crate::log_info!("🛑 Terminating SurrealDB sidecar (pid={})...", child.id());
