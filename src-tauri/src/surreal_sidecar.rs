@@ -148,13 +148,16 @@ pub fn start_surreal(
 
     let db_path   = data_dir.join("auraseek.db");
     let bind_addr = format!("0.0.0.0:{}", port);
-    let file_uri  = format!("file://{}", db_path.display());
+    // SurrealDB 3.x deprecates `file://` in favour of dedicated backends such
+    // as `surrealkv://` and `rocksdb://`. We use SurrealKV here as a robust
+    // single-node store.
+    let db_uri    = format!("surrealkv://{}", db_path.display());
 
-    crate::log_info!("🗄️  Starting SurrealDB | binary={} port={} data={}",
-        binary.display(), port, db_path.display());
+    crate::log_info!("🗄️  Starting SurrealDB | binary={} port={} uri={}",
+        binary.display(), port, db_uri);
 
     let child = Command::new(binary)
-        .args(["start", "--bind", &bind_addr, "--user", user, "--pass", pass, "--log", "warn", &file_uri])
+        .args(["start", "--bind", &bind_addr, "--user", user, "--pass", pass, "--log", "warn", &db_uri])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

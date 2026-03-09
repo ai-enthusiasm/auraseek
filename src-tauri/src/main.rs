@@ -64,7 +64,10 @@ impl AppState {
         Self {
             engine:        Arc::new(Mutex::new(None)),
             db:            Arc::new(Mutex::new(None)),
-            surreal_addr:  std::sync::Mutex::new("127.0.0.1:8000".to_string()),
+            // Will be set by the sidecar launcher in `setup()`. Start empty so we
+            // never accidentally fall back to a fixed port – the sidecar always
+            // chooses a free port in [8000, 9000].
+            surreal_addr:  std::sync::Mutex::new(String::new()),
             surreal_user:  std::sync::Mutex::new("root".to_string()),
             surreal_pass:  std::sync::Mutex::new("root".to_string()),
             source_dir:    Mutex::new(String::new()),
@@ -759,7 +762,11 @@ pub fn run() {
                     }
                 }
                 Err(e) => {
-                    crate::log_warn!("⚠️  SurrealDB sidecar failed: {}. Will try default 127.0.0.1:8000", e);
+                    // Do NOT fall back to a fixed port. If the sidecar fails, we
+                    // leave `surreal_addr` empty so `cmd_init` can report a clear
+                    // error instead of trying a random hard-coded port.
+                    crate::log_warn!("⚠️  SurrealDB sidecar failed: {}. DB will be unavailable until restart.", e);
+                    *state.surreal_addr.lock().unwrap() = String::new();
                 }
             }
 
