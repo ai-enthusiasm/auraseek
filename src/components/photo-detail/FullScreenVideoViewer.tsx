@@ -31,37 +31,35 @@ export function FullScreenVideoViewer({
     const [isFavorite, setIsFavorite] = useState(photo.favorite || false);
     const [isSharing, setIsSharing] = useState(false);
     const [videoError, setVideoError] = useState(false);
-    const [blobUrl, setBlobUrl] = useState<string | null>(null);
+    const [streamUrl, setStreamUrl] = useState<string | null>(null);
 
     useEffect(() => {
         setIsFavorite(photo.favorite || false);
         setVideoError(false);
-        setBlobUrl(null);
+        setStreamUrl(null);
 
         let active = true;
-        let urlToRevoke: string | null = null;
 
-        // Bypass WebKitGTK/GStreamer asset streaming issues by fetching to a Blob URL
-        fetch(photo.url)
-            .then(res => res.blob())
-            .then(blob => {
-                if (!active) return;
-                const url = URL.createObjectURL(blob);
-                urlToRevoke = url;
-                setBlobUrl(url);
-            })
-            .catch(err => {
-                console.error("Failed to fetch video blob:", err);
+        if (photo.filePath) {
+            // Bypass WebKitGTK/GStreamer asset streaming limitations by using a local HTTP stream
+            AuraSeekApi.getStreamPort().then(port => {
+                if (active && port) {
+                    setStreamUrl(`http://127.0.0.1:${port}/stream?path=${encodeURIComponent(photo.filePath!)}`);
+                } else if (active) {
+                    setVideoError(true);
+                }
+            }).catch(err => {
+                console.error("Failed to get stream port:", err);
                 if (active) setVideoError(true);
             });
+        } else {
+            setVideoError(true);
+        }
 
         return () => {
             active = false;
-            if (urlToRevoke) {
-                URL.revokeObjectURL(urlToRevoke);
-            }
         };
-    }, [photo.id, photo.url, photo.favorite]);
+    }, [photo.id, photo.filePath, photo.favorite]);
 
     const handleFavorite = async () => {
         try {
@@ -189,13 +187,13 @@ export function FullScreenVideoViewer({
                                 Mở bằng Cine
                             </button>
                         </div>
-                    ) : !blobUrl ? (
+                    ) : !streamUrl ? (
                         <div className="flex items-center justify-center">
-                            <span className="text-slate-400 animate-pulse text-sm font-medium">Đang tải video...</span>
+                            <span className="text-slate-400 animate-pulse text-sm font-medium">Đang kết nối luồng phát...</span>
                         </div>
                     ) : (
                         <video
-                            src={blobUrl}
+                            src={streamUrl}
                             poster={photo.thumbnailUrl}
                             controls
                             autoPlay

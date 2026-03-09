@@ -33,16 +33,16 @@ export interface SearchResultMeta {
 }
 
 export interface SearchResult {
-    media_id:          string;
-    similarity_score:  number;
-    file_path:         string;
-    media_type:        string;
-    metadata:          SearchResultMeta;
+    media_id: string;
+    similarity_score: number;
+    file_path: string;
+    media_type: string;
+    metadata: SearchResultMeta;
     /** Full detection data for hover overlays */
-    detected_objects:  DetectedObject[];
-    detected_faces:    DetectedFace[];
-    width:             number | null;
-    height:            number | null;
+    detected_objects: DetectedObject[];
+    detected_faces: DetectedFace[];
+    width: number | null;
+    height: number | null;
 }
 
 export interface TimelineItem {
@@ -142,6 +142,10 @@ export const AuraSeekApi = {
 
     async getStatus(): Promise<AppStatus> {
         return invoke<AppStatus>("cmd_get_status");
+    },
+
+    async getStreamPort(): Promise<number> {
+        return invoke<number>("cmd_get_stream_port");
     },
 
     async scanFolder(sourcePath: string): Promise<IngestSummary> {

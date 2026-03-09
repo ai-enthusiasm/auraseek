@@ -66,6 +66,7 @@ pub struct AppState {
     /// Handle for the file system watcher. Kept alive as long as a source_dir
     /// is configured. Replaced when source_dir changes.
     pub watcher_handle: std::sync::Mutex<Option<fs_watcher::FsWatcherHandle>>,
+    pub stream_port:   std::sync::atomic::AtomicU16,
 }
 
 impl AppState {
@@ -84,8 +85,53 @@ impl AppState {
             surreal_child: std::sync::Mutex::new(None),
             data_dir:       std::sync::Mutex::new(std::path::PathBuf::from(".")),
             watcher_handle: std::sync::Mutex::new(None),
+            stream_port:    std::sync::atomic::AtomicU16::new(0),
         }
     }
+}
+
+// ─── Stream Server for Video ─────────────────────────────────────────────────
+use axum::{extract::{Query, Request}, response::{Response, IntoResponse}, routing::get, Router};
+
+#[derive(serde::Deserialize)]
+struct VideoQuery {
+    path: String,
+}
+
+async fn stream_video(Query(q): Query<VideoQuery>, req: Request) -> Response {
+    use tower::ServiceExt;
+    let mut service = tower_http::services::ServeFile::new(&q.path);
+    match service.oneshot(req).await {
+        Ok(res) => res.into_response(),
+        Err(_) => axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn spawn_stream_server() -> u16 {
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin(tower_http::cors::Any)
+        .allow_methods(tower_http::cors::Any)
+        .allow_headers(tower_http::cors::Any);
+
+    let app = Router::new()
+        .route("/stream", get(stream_video))
+        .layer(cors);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+
+    tauri::async_runtime::spawn(async move {
+        let tokio_listener = tokio::net::TcpListener::from_std(listener).unwrap();
+        axum::serve(tokio_listener, app).await.unwrap();
+    });
+
+    port
+}
+
+#[tauri::command]
+fn cmd_get_stream_port(state: tauri::State<'_, AppState>) -> u16 {
+    state.stream_port.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ─── RAM helper ──────────────────────────────────────────────────────────────
@@ -829,6 +875,10 @@ pub fn run() {
         .setup(|app| {
             use tauri::Manager;
 
+            let port = spawn_stream_server();
+            app.state::<AppState>().stream_port.store(port, std::sync::atomic::Ordering::Relaxed);
+            crate::log_info!("🎥 Video stream server started on port {}", port);
+
             let resource_dir = app.path().resource_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -936,6 +986,7 @@ pub fn run() {
             cmd_authenticate_os,
             cmd_cleanup_database,
             cmd_reset_database,
+            cmd_get_stream_port,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

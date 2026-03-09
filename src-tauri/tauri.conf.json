@@ -55,7 +55,11 @@
           "libgcc-s1",
           "libc6",
           "ffmpeg",
-          "libopencv-dev"
+          "libopencv-dev",
+          "gstreamer1.0-libav",
+          "gstreamer1.0-plugins-good",
+          "gstreamer1.0-plugins-bad",
+          "gstreamer1.0-plugins-ugly"
         ]
       }
     }
