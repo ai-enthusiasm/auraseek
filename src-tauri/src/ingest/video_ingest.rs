@@ -211,15 +211,22 @@ pub async fn process_video(
         }
     }
 
-    // ── 5. Generate thumbnail (first valid frame) ─────────────────────────────
+    // ── 5. Generate thumbnail from the first processed frame (less likely to be pure black) ──
     let thumb_name = format!("{}.thumb.jpg", stem);
     let thumb_path = Path::new(video_path)
         .parent()
         .unwrap_or(Path::new("."))
         .join(&thumb_name);
 
-    let thumb_result = if extract_frame(video_path, 0, fps, &thumb_path).is_ok() {
-        log_info!("🖼️  Thumbnail saved: {}", thumb_path.display());
+    // Prefer the first frame we actually extracted & processed; fall back to frame 0.
+    let thumb_frame_idx: u64 = frame_jobs.first().copied().unwrap_or(0);
+
+    let thumb_result = if extract_frame(video_path, thumb_frame_idx, fps, &thumb_path).is_ok() {
+        log_info!(
+            "🖼️  Thumbnail saved (frame {}): {}",
+            thumb_frame_idx,
+            thumb_path.display()
+        );
         Some(thumb_name)
     } else {
         log_warn!("⚠️ Could not generate thumbnail for {}", video_path);
