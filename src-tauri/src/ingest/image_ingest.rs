@@ -10,6 +10,7 @@ use sha2::{Sha256, Digest};
 use crate::db::{SurrealDb, DbOperations};
 use crate::db::models::{MediaDoc, FileInfo, MediaMetadata, ObjectEntry, FaceEntry, Bbox, PersonDoc};
 use crate::processor::AuraSeekEngine;
+use crate::processor::pipeline::EngineOutput;
 use crate::ingest::video_ingest;
 
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "avif"];
@@ -131,82 +132,7 @@ pub async fn ingest_folder(
             }
         } else {
             // ── Standard image pipeline ──────────────────────────────────────
-            let mut eng_guard = engine.lock().await;
-            let eng = match eng_guard.as_mut() {
-                Some(e) => e,
-                None => { drop(eng_guard); continue; }
-            };
-
-            match eng.process_image(&path_str) {
-                Ok(output) => {
-                    crate::log_info!(
-                        "  ✅ Done in {}ms | objects={} faces={} embed_dims={}",
-                        t0.elapsed().as_millis(),
-                        output.objects.len(), output.faces.len(), output.vision_embedding.len()
-                    );
-
-                    let objects: Vec<ObjectEntry> = output.objects.iter().map(|o| ObjectEntry {
-                        class_name: o.class_name.clone(),
-                        conf: o.conf,
-                        bbox: Bbox {
-                            x: o.bbox[0], y: o.bbox[1],
-                            w: o.bbox[2] - o.bbox[0],
-                            h: o.bbox[3] - o.bbox[1],
-                        },
-                        mask_area: Some(o.mask_area),
-                        mask_path: None,
-                        mask_rle: Some(o.mask_rle.iter().map(|&(a, b)| [a, b]).collect()),
-                    }).collect();
-
-                    let faces: Vec<FaceEntry> = output.faces.iter().map(|f| FaceEntry {
-                        face_id: f.face_id.clone(),
-                        name: f.name.clone(),
-                        conf: f.conf,
-                        bbox: Bbox {
-                            x: f.bbox[0], y: f.bbox[1],
-                            w: f.bbox[2] - f.bbox[0],
-                            h: f.bbox[3] - f.bbox[1],
-                        },
-                    }).collect();
-
-                    let detected_faces: Vec<(String, f32, Bbox)> = faces.iter().map(|f| (
-                        f.face_id.clone(), f.conf,
-                        Bbox { x: f.bbox.x, y: f.bbox.y, w: f.bbox.w, h: f.bbox.h },
-                    )).collect();
-
-                    drop(eng_guard);
-
-                    let db_guard = db.lock().await;
-                    if let Some(ref sdb) = *db_guard {
-                        if let Err(e) = DbOperations::update_media_ai(sdb, &media_id, objects, faces).await {
-                            crate::log_warn!("⚠️ update_media_ai failed for {}: {}", media_id, e);
-                        }
-                        if !output.vision_embedding.is_empty() {
-                            if let Err(e) = DbOperations::insert_embedding(
-                                sdb, &media_id, "image", None, None, output.vision_embedding.clone()
-                            ).await {
-                                crate::log_warn!("⚠️ insert_embedding failed for {}: {}", media_id, e);
-                            }
-                        }
-                        for (fid, conf, bbox) in &detected_faces {
-                            crate::log_info!("  👤 Upserting person face_id={} conf={:.3}", fid, conf);
-                            if let Err(e) = DbOperations::upsert_person(sdb, PersonDoc {
-                                face_id: fid.clone(),
-                                name: None,
-                                thumbnail: Some(file_name_only.clone()),
-                                conf: Some(*conf),
-                                face_bbox: Some(bbox.clone()),
-                            }).await {
-                                crate::log_warn!("⚠️ upsert_person failed for {}: {}", fid, e);
-                            }
-                        }
-                    }
-                }
-                Err(e) => {
-                    drop(eng_guard);
-                    crate::log_warn!("🤖 AI error for {} ({}ms): {}", file_name_only, t0.elapsed().as_millis(), e);
-                }
-            }
+            process_image_file(&path_str, &media_id, &file_name_only, &db, &engine).await;
         }
 
         ai_processed += 1;
@@ -226,7 +152,100 @@ pub async fn ingest_folder(
     Ok(summary)
 }
 
-async fn scan_single_file(
+/// Shared utility: run the full AI pipeline on a single image path.
+/// Returns the raw EngineOutput without writing anything to the database.
+/// Both the image pipeline and video frame pipeline call this.
+pub async fn analyze_image_raw(
+    path_str: &str,
+    engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
+) -> Option<EngineOutput> {
+    let mut eng_guard = engine.lock().await;
+    let eng = eng_guard.as_mut()?;
+    match eng.process_image(path_str) {
+        Ok(output) => Some(output),
+        Err(e) => {
+            crate::log_warn!("🤖 AI error for {}: {}", path_str, e);
+            None
+        }
+    }
+}
+
+pub async fn process_image_file(
+    path_str: &str,
+    media_id: &str,
+    file_name_only: &str,
+    db: &Arc<Mutex<Option<SurrealDb>>>,
+    engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
+) {
+    let t0 = std::time::Instant::now();
+    let output = match analyze_image_raw(path_str, engine).await {
+        Some(o) => o,
+        None => return,
+    };
+
+    crate::log_info!(
+        "  ✅ Done in {}ms | objects={} faces={} embed_dims={}",
+        t0.elapsed().as_millis(),
+        output.objects.len(), output.faces.len(), output.vision_embedding.len()
+    );
+
+    let objects: Vec<ObjectEntry> = output.objects.iter().map(|o| ObjectEntry {
+        class_name: o.class_name.clone(),
+        conf: o.conf,
+        bbox: Bbox {
+            x: o.bbox[0], y: o.bbox[1],
+            w: o.bbox[2] - o.bbox[0],
+            h: o.bbox[3] - o.bbox[1],
+        },
+        mask_area: Some(o.mask_area),
+        mask_path: None,
+        mask_rle: Some(o.mask_rle.iter().map(|&(a, b)| [a, b]).collect()),
+    }).collect();
+
+    let faces: Vec<FaceEntry> = output.faces.iter().map(|f| FaceEntry {
+        face_id: f.face_id.clone(),
+        name: f.name.clone(),
+        conf: f.conf,
+        bbox: Bbox {
+            x: f.bbox[0], y: f.bbox[1],
+            w: f.bbox[2] - f.bbox[0],
+            h: f.bbox[3] - f.bbox[1],
+        },
+    }).collect();
+
+    let detected_faces: Vec<(String, f32, Bbox)> = faces.iter().map(|f| (
+        f.face_id.clone(), f.conf,
+        Bbox { x: f.bbox.x, y: f.bbox.y, w: f.bbox.w, h: f.bbox.h },
+    )).collect();
+
+    let db_guard = db.lock().await;
+    if let Some(ref sdb) = *db_guard {
+        if let Err(e) = DbOperations::update_media_ai(sdb, media_id, objects, faces).await {
+            crate::log_warn!("⚠️ update_media_ai failed for {}: {}", media_id, e);
+        }
+        if !output.vision_embedding.is_empty() {
+            if let Err(e) = DbOperations::insert_embedding(
+                sdb, media_id, "image", None, None, output.vision_embedding
+            ).await {
+                crate::log_warn!("⚠️ insert_embedding failed for {}: {}", media_id, e);
+            }
+        }
+        for (fid, conf, bbox) in &detected_faces {
+            crate::log_info!("  👤 Upserting person face_id={} conf={:.3}", fid, conf);
+            if let Err(e) = DbOperations::upsert_person(sdb, PersonDoc {
+                face_id: fid.clone(),
+                name: None,
+                thumbnail: Some(file_name_only.to_string()),
+                conf: Some(*conf as f32),
+                face_bbox: Some(bbox.clone() as Bbox),
+            }).await {
+                crate::log_warn!("⚠️ upsert_person failed for {}: {}", fid, e);
+            }
+        }
+    }
+}
+
+pub async fn scan_single_file(
     path: &Path,
     db: &Arc<Mutex<Option<SurrealDb>>>,
     _source_dir: &str,
@@ -315,7 +334,7 @@ fn collect_files_recursive(dir: &Path, images: &mut Vec<PathBuf>, videos: &mut V
                 .unwrap_or("")
                 .to_lowercase();
             let fname = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if IMAGE_EXTENSIONS.contains(&ext.as_str()) && !fname.ends_with(".thumb.jpg") {
+            if IMAGE_EXTENSIONS.contains(&ext.as_str()) && !fname.ends_with(".thumb.jpg") && !fname.ends_with(".debug.jpg") {
                 images.push(path);
             } else if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
                 videos.push(path);
