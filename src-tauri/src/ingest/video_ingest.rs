@@ -21,9 +21,9 @@ use crate::processor::AuraSeekEngine;
 use crate::{log_info, log_warn};
 
 /// Scene-detection threshold for ffmpeg (0 = no change, 1 = full change).
-const SCENE_THRESHOLD: f64 = 0.30;
+const SCENE_THRESHOLD: f64 = 0.1;
 /// Two frames whose vision embeddings have cosine similarity ≥ this are considered duplicates.
-const DEDUP_THRESHOLD: f32 = 0.98;
+const DEDUP_THRESHOLD: f32 = 0.95;
 
 /// Full video processing pipeline.
 /// Returns the thumbnail filename (stem + ".thumb.jpg") if created, None otherwise.
@@ -233,8 +233,19 @@ pub async fn process_video(
         None
     };
 
-    // Cleanup temp frames
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    // Debug: Save extracted frames next to the video
+    let debug_dir = Path::new(video_path)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .join(format!("{}_debug_scenes", stem));
+    
+    // Attempt to rename (move) the temp directory instead of deleting it
+    if std::fs::rename(&tmp_dir, &debug_dir).is_ok() {
+        log_info!("🐛 Saved debug scene frames to {}", debug_dir.display());
+    } else {
+        // Fallback: cleanup if move fails
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
 
     log_info!(
         "🎥 Video done: {} embeds, {} objects, {} faces | {}",
@@ -274,7 +285,7 @@ fn probe_video(video_path: &str) -> Result<(f64, u64)> {
 }
 
 fn detect_scenes(video_path: &str, fps: f64) -> Result<Vec<u64>> {
-    let filter = format!("select=gt(scene\\,{}),showinfo", SCENE_THRESHOLD);
+    let filter = format!("select='gt(scene,{})',showinfo", SCENE_THRESHOLD);
     let output = Command::new("ffmpeg")
         .args(["-i", video_path, "-vf", &filter, "-vsync","vfr","-f","null","-"])
         .stdout(std::process::Stdio::null())

@@ -97,16 +97,29 @@ pub async fn ingest_folder(
         (newly_added, skipped, errors)
     });
 
+    // Collecting exactly what needs to be processed to accurately output the counts
+    let mut to_process = Vec::new();
+    while let Some(item) = rx.recv().await {
+        to_process.push(item);
+    }
+    
+    let (newly_added, skipped, errors) = scan_task.await?;
+    summary.newly_added = newly_added;
+    summary.skipped_dup = skipped;
+    summary.errors = errors;
+
+    let total_to_process = to_process.len();
+
     // Thread 2: AI processing + embedding
     let mut ai_processed = 0usize;
-    while let Some((path, media_id, is_video)) = rx.recv().await {
+    for (path, media_id, is_video) in to_process {
         let path_str = path.to_string_lossy().to_string();
         let file_name_only = path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
 
-        crate::log_info!("🤖 [AI {}/{}] Processing: {}", ai_processed + 1, total, file_name_only);
+        crate::log_info!("🤖 [AI {}/{}] Processing: {}", ai_processed + 1, total_to_process, file_name_only);
         let t0 = std::time::Instant::now();
 
         if is_video {
@@ -201,19 +214,11 @@ pub async fn ingest_folder(
         if let Some(ref ptx) = progress_tx {
             let _ = ptx.send(IngestProgress {
                 processed: ai_processed,
-                total,
-                current_file: path.file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("")
-                    .to_string(),
+                total: total_to_process,
+                current_file: file_name_only,
             });
         }
     }
-
-    let (newly_added, skipped, errors) = scan_task.await?;
-    summary.newly_added = newly_added;
-    summary.skipped_dup = skipped;
-    summary.errors = errors;
 
     crate::log_info!("✅ Ingest complete: {} new, {} skipped, {} errors, {} AI processed (images+videos)",
         newly_added, skipped, errors, ai_processed);
@@ -229,12 +234,17 @@ async fn scan_single_file(
 ) -> Result<Option<String>> {
     let sha256 = compute_sha256(path)?;
 
-    // Dedup check
+    // Dedup and process check
     {
         let db_guard = db.lock().await;
         let sdb = db_guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not connected"))?;
-        if DbOperations::is_duplicate_sha256(sdb, &sha256).await? {
-            return Ok(None);
+        if let Some((existing_id, is_processed)) = DbOperations::check_file_status(sdb, &sha256).await? {
+            if is_processed {
+                return Ok(None); // File exists and is fully processed -> Skip
+            } else {
+                // File exists but is NOT processed (failed in previous run) -> Return ID to process again
+                return Ok(Some(existing_id));
+            }
         }
     }
 

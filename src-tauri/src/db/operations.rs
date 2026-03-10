@@ -58,16 +58,24 @@ pub struct DbOperations;
 impl DbOperations {
     // ─── Media CRUD ──────────────────────────────────────────────────
 
-    /// Check duplicate by SHA-256
-    pub async fn is_duplicate_sha256(db: &SurrealDb, sha256: &str) -> Result<bool> {
+    /// Check duplicate by SHA-256 and return (media_id, processed_status)
+    pub async fn check_file_status(db: &SurrealDb, sha256: &str) -> Result<Option<(String, bool)>> {
         let sha = sha256.to_string();
         let mut res = db.db.query(
-            "SELECT id FROM media WHERE file.sha256 = $sha LIMIT 1"
+            "SELECT id, processed FROM media WHERE file.sha256 = $sha LIMIT 1"
         )
         .bind(("sha", sha))
         .await?;
-        let rows: Vec<IdOnly> = res.take(0)?;
-        Ok(!rows.is_empty())
+
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct StatusRow { id: RecordId, processed: bool }
+
+        let rows: Vec<StatusRow> = res.take(0)?;
+        if let Some(row) = rows.first() {
+            Ok(Some((record_id_to_string(&row.id), row.processed)))
+        } else {
+            Ok(None)
+        }
     }
 
     /// Insert a new media document, returns the record id as string
