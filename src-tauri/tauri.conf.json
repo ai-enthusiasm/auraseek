@@ -45,7 +45,9 @@
       }
     },
     "externalBin": [
-      "binaries/surreal",
+      "binaries/surreal"
+    ],
+    "resources": [
       "binaries/opencv_core4.dll",
       "binaries/opencv_imgcodecs4.dll",
       "binaries/opencv_imgproc4.dll",
