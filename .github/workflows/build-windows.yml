@@ -68,7 +68,9 @@ jobs:
       - name: Set OpenCV Environment Variables
         run: |
           echo "VCPKG_ROOT=$VCPKG_INSTALLATION_ROOT" >> $GITHUB_ENV
-          echo "OPENCV_LINK_LIBS=opencv_world410" >> $GITHUB_ENV # Adjust version number if vcpkg installs a different one
+          echo "VCPKGRS_DYNAMIC=1" >> $GITHUB_ENV
+          echo "OPENCV_LINK_LIBS=opencv_world410" >> $GITHUB_ENV
+          echo "OPENCV_LINK_PATHS=$VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib" >> $GITHUB_ENV
         shell: bash
 
       - name: Install Frontend Dependencies
