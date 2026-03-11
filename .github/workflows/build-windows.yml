@@ -91,7 +91,7 @@ jobs:
             [System.IO.Path]::GetFileNameWithoutExtension($_.Name)
           }
 
-          $linkLibs = $names -join ";"
+          $linkLibs = $names -join ","
 
           "OPENCV_LINK_LIBS=$linkLibs" | Out-File $env:GITHUB_ENV -Append
           "OPENCV_LINK_PATHS=$libDir" | Out-File $env:GITHUB_ENV -Append
