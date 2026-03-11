@@ -43,9 +43,8 @@ jobs:
           Write-Host "Download successful."
 
       - name: Install LLVM and Clang
-        uses: KyleMayes/install-llvm-action@v2
-        with:
-          version: "18.0" # MSVC headers currently require newer Clang, 18.0/19.0 is more stable. If 18.0 fails, you can try "19.0"
+        run: choco install llvm --yes
+        shell: powershell
 
       - name: Install OpenCV with vcpkg
         run: |
