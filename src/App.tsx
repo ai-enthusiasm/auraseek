@@ -100,7 +100,7 @@ function App() {
           // Keep screen up while engine loads models into RAM
           setDownloadProgress({
             file: "", progress: 1.0,
-            message: "Đang khởi động AI Engine...",
+            message: "Đang chuẩn bị hệ thống...",
             done: false, error: "",
             file_index: 0, file_total: 0,
             bytes_done: 0, bytes_total: 0,
