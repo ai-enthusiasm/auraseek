@@ -1137,7 +1137,9 @@ fn ensure_dlls(app: &tauri::App) -> anyhow::Result<()> {
         "opencv_videoio_ffmpeg460_64.dll",
         "msvcp140.dll",
         "vcruntime140.dll",
-        "concrt140.dll"
+        "concrt140.dll",
+        "vcruntime140_1.dll",
+        "msvcp140_1.dll"
     ];
 
     for dll in &dlls {
