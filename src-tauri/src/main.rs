@@ -238,7 +238,7 @@ async fn cmd_download_models(
 /// Initialize AI engine and SurrealDB connection, load source_dir from config.
 /// Assumes model files are already present (call cmd_download_models first if needed).
 #[tauri::command]
-async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
+async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
     let data_dir = state.data_dir.lock().unwrap().clone();
 
     // Init engine – load models from the app data directory
@@ -261,6 +261,11 @@ async fn cmd_init(state: State<'_, AppState>) -> Result<String, String> {
 
     // Init DB
     {
+        // Retry starting sidecar if it's not running (e.g. first launch after download)
+        if state.surreal_addr.lock().unwrap().is_empty() {
+            let _ = start_db_sidecar(&app);
+        }
+
         let addr = state.surreal_addr.lock().unwrap().clone();
         let user = state.surreal_user.lock().unwrap().clone();
         let pass = state.surreal_pass.lock().unwrap().clone();
@@ -1126,6 +1131,7 @@ fn dirs_home() -> std::path::PathBuf {
 
 /// Ensures all necessary DLLs (OpenCV, MSVC) are present in the executable directory.
 /// This is a fallback to ensure the app runs on non-dev machines without global installs.
+#[cfg(windows)]
 fn ensure_dlls(app: &tauri::App) -> anyhow::Result<()> {
     use tauri::Manager;
     let resource_dir = app.path().resource_dir()?;
@@ -1158,6 +1164,44 @@ fn ensure_dlls(app: &tauri::App) -> anyhow::Result<()> {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
+/// (Re)starts the SurrealDB sidecar if it's not already running.
+/// This is called in setup() and retried in cmd_init() to handle the case where
+/// the binary was missing on first launch but has since been downloaded.
+fn start_db_sidecar(app: &tauri::AppHandle) -> Result<(), String> {
+    use tauri::Manager;
+    let state = app.state::<AppState>();
+    
+    // Check if we already have a connection address
+    {
+        let addr = state.surreal_addr.lock().unwrap();
+        if !addr.is_empty() {
+            return Ok(());
+        }
+    }
+
+    let resource_dir = app.path().resource_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let data_dir = state.data_dir.lock().unwrap().clone();
+    let surreal_data_dir = data_dir.join("db");
+    
+    let user = state.surreal_user.lock().unwrap().clone();
+    let pass = state.surreal_pass.lock().unwrap().clone();
+
+    match surreal_sidecar::ensure_surreal(&resource_dir, &surreal_data_dir, &user, &pass) {
+        Ok((addr, child_opt)) => {
+            crate::log_info!("🗄️  SurrealDB sidecar started: {}", addr);
+            *state.surreal_addr.lock().unwrap() = addr;
+            if let Some(child) = child_opt {
+                *state.surreal_child.lock().unwrap() = Some(child);
+            }
+            Ok(())
+        }
+        Err(e) => {
+            crate::log_warn!("⚠️  SurrealDB sidecar start failed: {}. (Expected on first launch before download)", e);
+            Err(e.to_string())
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Workaround for WebKitGTK X11 DRI2/hardware acceleration crash on Linux when playing videos
@@ -1177,14 +1221,12 @@ pub fn run() {
             use tauri::Manager;
 
             // 1. Ensure DLLs are in the executable directory
+            #[cfg(windows)]
             let _ = ensure_dlls(app);
 
             let port = spawn_stream_server();
             app.state::<AppState>().stream_port.store(port, std::sync::atomic::Ordering::Relaxed);
             crate::log_info!("🎥 Video stream server started on port {}", port);
-
-            let resource_dir = app.path().resource_dir()
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
             // Base data directory for this app (platform-aware)
             let base_data_dir = app.path().app_data_dir()
@@ -1202,28 +1244,10 @@ pub fn run() {
             // Store base data dir so cmd_init can locate model files
             *state.data_dir.lock().unwrap() = base_data_dir.clone();
 
-            // SurrealDB uses a sub-directory so it doesn't conflict with model files
-            let surreal_data_dir = base_data_dir.join("db");
-
-            let user = state.surreal_user.lock().unwrap().clone();
-            let pass = state.surreal_pass.lock().unwrap().clone();
-
-            match surreal_sidecar::ensure_surreal(&resource_dir, &surreal_data_dir, &user, &pass) {
-                Ok((addr, child_opt)) => {
-                    crate::log_info!("🗄️  SurrealDB address: {}", addr);
-                    *state.surreal_addr.lock().unwrap() = addr;
-                    if let Some(child) = child_opt {
-                        *state.surreal_child.lock().unwrap() = Some(child);
-                    }
-                }
-                Err(e) => {
-                    // Do NOT fall back to a fixed port. If the sidecar fails, we
-                    // leave `surreal_addr` empty so `cmd_init` can report a clear
-                    // error instead of trying a random hard-coded port.
-                    crate::log_warn!("⚠️  SurrealDB sidecar failed: {}. DB will be unavailable until restart.", e);
-                    *state.surreal_addr.lock().unwrap() = String::new();
-                }
-            }
+            // SurrealDB binary is downloaded by downloader.rs after the app starts
+            // if it's the first run. We try to start it now; if it fails,
+            // cmd_init will retry once the download is finished.
+            let _ = start_db_sidecar(&app.handle());
 
             Ok(())
         })
