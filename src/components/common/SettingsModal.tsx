@@ -7,11 +7,17 @@ import {
 } from "@/components/ui/dialog";
 import { Settings, Cpu } from "lucide-react";
 import { useState, useEffect } from "react";
+import { flushSync } from "react-dom";
 import { AuraSeekApi } from "@/lib/api";
 import { SettingsSourceSection } from "./SettingsSourceSection.tsx";
 import { SettingsDatabaseSection } from "./SettingsDatabaseSection.tsx";
 import { SettingsErrorAlert } from "./SettingsErrorAlert.tsx";
 import { ConfirmDialog } from "../ui/ConfirmDialog";
+
+/** Đồng bộ với App.tsx: sau reload, bắt buộc màn nhập thư mục nguồn. */
+export const SESSION_POST_DB_RESET = "auraseek_post_db_reset";
+export const EVENT_FORCE_CLOSE_SETTINGS = "auraseek_force_close_settings";
+export const EVENT_FORCE_FIRST_RUN_UI = "auraseek_force_first_run_ui";
 
 interface SettingsModalProps {
     open: boolean;
@@ -92,33 +98,44 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
     };
 
     const handleReset = async () => {
+        // Đóng xác nhận + Cài đặt ngay trong DOM trước khi invoke (tránh khung/overlay kẹt nếu Rust chờ lâu).
+        flushSync(() => {
+            setResetConfirmOpen(false);
+            onOpenChange(false);
+        });
+        try {
+            sessionStorage.setItem(SESSION_POST_DB_RESET, "1");
+        } catch {
+            /* private mode */
+        }
+        window.dispatchEvent(new Event(EVENT_FORCE_CLOSE_SETTINGS));
+        window.dispatchEvent(new Event(EVENT_FORCE_FIRST_RUN_UI));
+
         setResetting(true);
         try {
             await AuraSeekApi.resetDatabase();
             setSourceFolder("");
             onSourceDirChange?.("");
             setError(null);
-            setResetConfirmOpen(false);
-            
-            // Close settings before showing the success alert to prevent Z-index issues
-            onOpenChange(false);
-            setTimeout(() => {
-                setAlertData({ isOpen: true, title: "Đặt lại thành công", desc: "Đã đặt lại database và cấu hình thành công. Ứng dụng sẽ tải lại." });
-            }, 100);
-        } catch (e) {
-            setError(String(e));
-            setResetConfirmOpen(false);
+            document.body.removeAttribute("data-scroll-locked");
+            document.documentElement.removeAttribute("data-scroll-locked");
             setResetting(false);
-            onOpenChange(true); // Re-open settings on error
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    window.location.reload();
+                });
+            });
+        } catch (e) {
+            // UI has already switched to first-run; keep error only for debugging.
+            setError(String(e));
+            setResetting(false);
         }
     };
 
+
+
     const handleAlertClose = () => {
-        const wasReset = alertData.title.includes("Đặt lại");
         setAlertData({ isOpen: false, title: "", desc: "" });
-        if (wasReset) {
-            window.location.reload();
-        }
     };
 
     return (
@@ -161,7 +178,7 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
                             onCleanup={handleCleanupClick}
                             onReset={() => {
                                 onOpenChange(false);
-                                setResetConfirmOpen(true);
+                                setTimeout(() => setResetConfirmOpen(true), 0);
                             }}
                         />
 

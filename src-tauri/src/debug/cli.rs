@@ -1,5 +1,9 @@
 //! Debug CLI — full pipeline simulation, writing per-image/per-video artifact folders.
 //!
+//! Run **without** the desktop app (no GTK), e.g. on a headless server:
+//! `cargo run --manifest-path src-tauri/Cargo.toml -- debug-ingest /path/in /path/out`
+//! or `./target/debug/auraseek debug-ingest /path/in /path/out`
+//!
 //! For each IMAGE → output/<stem>/
 //!   embeddings.json, detections.json, faces.json, face_similarity.json,
 //!   similarity_vs_others.json, det_seg.jpg, det_faces.jpg,
@@ -332,7 +336,8 @@ fn process_one(engine: &mut AuraSeekEngine, path: &Path, output_base: &str) -> R
 
     if let Some(ref mut fm) = engine.face {
         // Perform face detection once on the full frame
-        if let Ok(results) = fm.detect_from_mat_with_aligned(&frame_cv, &engine.face_db) {
+        fm.set_score_threshold(engine.face_detection_threshold);
+        if let Ok(results) = fm.detect_from_mat_with_aligned(&frame_cv, &engine.face_db, engine.face_identity_threshold) {
             for (mut fg, aligned) in results {
                 // Save aligned 112×112 crop
                 let aligned_path = format!("{out_dir}/face_aligned_{:02}.jpg", faces.len());
@@ -350,10 +355,10 @@ fn process_one(engine: &mut AuraSeekEngine, path: &Path, output_base: &str) -> R
             let _ = imwrite(&crop_path, crop, &params);
         }
 
-        // Session-based unknown grouping
+        // Session-based unknown grouping (same threshold as face_db + main engine)
         for f in faces.iter_mut() {
             if f.face_id == "unknown_placeholder" {
-                let mut best_score = 0.55_f32;
+                let mut best_score = engine.face_identity_threshold;
                 let mut cached_id = None;
                 for (cached_emb, id) in &engine.session_faces {
                     let score = cosine_similarity(&f.embedding, cached_emb);

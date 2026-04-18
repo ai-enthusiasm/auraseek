@@ -12,7 +12,6 @@ use super::vision::{
 use crate::core::config::AppConfig;
 use crate::{log_info, log_warn};
 use opencv::{
-    core::{Mat, Rect},
     imgcodecs::{imdecode, IMREAD_COLOR, IMREAD_IGNORE_ORIENTATION},
     prelude::*,
 };
@@ -90,7 +89,10 @@ pub struct AuraSeekEngine {
     pub session_faces: Vec<(Vec<f32>, String)>,
     yolo_confidence: f32,
     yolo_iou: f32,
-    face_threshold: f32,
+    /// Minimum confidence to consider a crop as a face.
+    pub face_detection_threshold: f32,
+    /// Cosine threshold for face identity matching.
+    pub face_identity_threshold: f32,
 }
 
 impl AuraSeekEngine {
@@ -129,7 +131,8 @@ impl AuraSeekEngine {
             session_faces: Vec::new(),
             yolo_confidence: app_cfg.yolo_confidence,
             yolo_iou: app_cfg.yolo_iou,
-            face_threshold: app_cfg.face_threshold,
+            face_detection_threshold: app_cfg.face_detection_threshold,
+            face_identity_threshold: app_cfg.face_identity_threshold,
         })
     }
 
@@ -144,75 +147,50 @@ impl AuraSeekEngine {
         let raw = self.yolo.detect(lb.blob.clone())?;
         let objects = YoloProcessor::postprocess(&raw, &lb, self.yolo_confidence, self.yolo_iou);
 
-        // 3. Face detection — only within person bboxes from YOLO
+        // 3. Face detection — prefer imread path (same behavior as debug pipeline),
+        // then fallback to explicit imdecode for robustness.
         let mut faces = vec![];
         if let Some(ref mut fm) = self.face {
-            let person_bboxes: Vec<[f32; 4]> = objects.iter()
-                .filter(|o| o.class_name == "person")
-                .map(|o| o.bbox)
-                .collect();
-
-            if person_bboxes.is_empty() {
-                // No person detected by YOLO — run on full image as fallback
-                if let Ok(detected) = fm.detect_from_path(img_path, &self.face_db) {
-                    faces = detected;
-                }
-            } else {
-                // Crop each person bbox and run face detection on the crop
-                let bytes = std::fs::read(img_path)?;
-                let buf = opencv::core::Vector::<u8>::from_iter(bytes);
-                // IGNORE EXIF rotation so dimensions exactly match Rust `image` crate used by YOLO!
-                let frame = imdecode(&buf, IMREAD_COLOR | IMREAD_IGNORE_ORIENTATION)?;
-                if !frame.empty() {
-                    let img_size = frame.size()?;
-                    let (img_w, img_h) = (img_size.width, img_size.height);
-
-                    for bbox in &person_bboxes {
-                        let x1 = (bbox[0].max(0.0) as i32).min(img_w - 1);
-                        let y1 = (bbox[1].max(0.0) as i32).min(img_h - 1);
-                        let x2 = (bbox[2].max(0.0) as i32).min(img_w);
-                        let y2 = (bbox[3].max(0.0) as i32).min(img_h);
-                        let cw = x2 - x1;
-                        let ch = y2 - y1;
-                        if cw < 30 || ch < 30 { continue; }
-
-                        let roi = Mat::roi(&frame, Rect::new(x1, y1, cw, ch))?;
-                        let crop = roi.try_clone()?;
-
-                        if let Ok(detected) = fm.detect_from_mat(&crop, &self.face_db) {
-                            for mut f in detected {
-                                // Map face bbox from crop coords back to original image coords
-                                f.bbox[0] += x1 as f32;
-                                f.bbox[1] += y1 as f32;
-                                f.bbox[2] += x1 as f32;
-                                f.bbox[3] += y1 as f32;
-                                faces.push(f);
+            fm.set_score_threshold(self.face_detection_threshold);
+            match fm.detect_from_path(img_path, &self.face_db, self.face_identity_threshold) {
+                Ok(detected) => faces = detected,
+                Err(path_err) => {
+                    log_warn!(
+                        "face detect_from_path failed: {} | file={}",
+                        path_err,
+                        img_path
+                    );
+                    match std::fs::read(img_path) {
+                        Ok(bytes) => {
+                            let buf = opencv::core::Vector::<u8>::from_iter(bytes);
+                            match imdecode(&buf, IMREAD_COLOR | IMREAD_IGNORE_ORIENTATION) {
+                                Ok(frame) if !frame.empty() => {
+                                    match fm.detect_from_mat(&frame, &self.face_db, self.face_identity_threshold) {
+                                        Ok(detected) => faces = detected,
+                                        Err(e) => log_warn!(
+                                            "face detect_from_mat failed: {} | file={}",
+                                            e,
+                                            img_path
+                                        ),
+                                    }
+                                }
+                                Ok(_) => log_warn!("face detect: decoded empty Mat | file={}", img_path),
+                                Err(e) => log_warn!("face detect: imdecode failed: {} | file={}", e, img_path),
                             }
                         }
-                    }
-                }
-
-                // Person crops can miss tiny/side faces. If still empty, run a
-                // full-frame pass as a safety fallback.
-                if faces.is_empty() {
-                    if let Ok(detected) = fm.detect_from_path(img_path, &self.face_db) {
-                        faces = detected;
+                        Err(e) => log_warn!("face detect: read file failed: {} | file={}", e, img_path),
                     }
                 }
             }
 
             if faces.is_empty() {
-                log_info!(
-                    "face detect: no face found | persons={} | file={}",
-                    person_bboxes.len(),
-                    img_path
-                );
+                log_info!("face detect: no face found | file={}", img_path);
             }
 
             // Session face matching for unknown faces
             for f in faces.iter_mut() {
                 if f.face_id == "unknown_placeholder" {
-                    let mut best_score = self.face_threshold;
+                    let mut best_score = self.face_identity_threshold;
                     let mut cached_id = None;
                     for (cached_emb, id) in &self.session_faces {
                         let score = cosine_similarity(&f.embedding, cached_emb);

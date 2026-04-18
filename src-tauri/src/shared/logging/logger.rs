@@ -1,6 +1,6 @@
 use std::fs::{OpenOptions, create_dir_all};
 use std::io::Write;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::path::Path;
 use chrono::Local;
 
@@ -18,6 +18,7 @@ pub struct Logger {
 static GLOBAL_LOGGER: Logger = Logger {
     file: Mutex::new(None),
 };
+static ACTIVE_LOG_PATH: OnceLock<String> = OnceLock::new();
 
 pub const GREEN:   &str = "\x1b[32m";
 pub const YELLOW:  &str = "\x1b[33m";
@@ -30,24 +31,56 @@ pub const RESET:   &str = "\x1b[0m";
 impl Logger {
     pub fn init(path: &str) {
         eprintln!("[Logger] Initializing with log path: {}", path);
-        
-        if let Some(parent) = Path::new(path).parent() {
-            if let Err(e) = create_dir_all(parent) {
-                eprintln!("[Logger] Failed to create log directory {}: {}", parent.display(), e);
-                return;
+
+        let mut candidates = vec![path.to_string()];
+        let data_fallback = crate::platform::paths::fallback_data_dir()
+            .join("auraseek.log")
+            .to_string_lossy()
+            .to_string();
+        if !candidates.iter().any(|p| p == &data_fallback) {
+            candidates.push(data_fallback);
+        }
+        if !candidates.iter().any(|p| p == "auraseek.log") {
+            candidates.push("auraseek.log".to_string());
+        }
+        #[cfg(not(windows))]
+        {
+            let tmp_fallback = std::env::temp_dir()
+                .join("auraseek.log")
+                .to_string_lossy()
+                .to_string();
+            if !candidates.iter().any(|p| p == &tmp_fallback) {
+                candidates.push(tmp_fallback);
             }
         }
-        
-        match OpenOptions::new().create(true).append(true).open(path) {
-            Ok(file) => {
-                let mut internal = GLOBAL_LOGGER.file.lock().unwrap();
-                *internal = Some(file);
-                eprintln!("[Logger] Successfully opened log file: {}", path);
+
+        for candidate in candidates {
+            if let Some(parent) = Path::new(&candidate).parent() {
+                if let Err(e) = create_dir_all(parent) {
+                    eprintln!("[Logger] Failed to create log directory {}: {}", parent.display(), e);
+                    continue;
+                }
             }
-            Err(e) => {
-                eprintln!("[Logger] Failed to open log file {}: {}", path, e);
+
+            match OpenOptions::new().create(true).append(true).open(&candidate) {
+                Ok(file) => {
+                    let mut internal = GLOBAL_LOGGER.file.lock().unwrap();
+                    *internal = Some(file);
+                    let _ = ACTIVE_LOG_PATH.set(candidate.clone());
+                    eprintln!("[Logger] Successfully opened log file: {}", candidate);
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("[Logger] Failed to open log file {}: {}", candidate, e);
+                }
             }
         }
+
+        eprintln!("[Logger] All log path candidates failed; file logging disabled");
+    }
+
+    pub fn active_log_path() -> Option<String> {
+        ACTIVE_LOG_PATH.get().cloned()
     }
 
     fn remove_ansi(text: &str) -> String {

@@ -23,36 +23,56 @@ pub fn pre_init() {
 /// resource directory into the exe directory so the app works on machines
 /// without a global install.  On other platforms this is a no-op.
 pub fn ensure_native_libs(resource_dir: &Path) -> anyhow::Result<()> {
+    let exe_path = std::env::current_exe()?;
+    let exe_dir = exe_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Failed to get exe parent dir"))?;
+
     #[cfg(windows)]
     {
-        let exe_path = std::env::current_exe()?;
-        let exe_dir = exe_path
-            .parent()
-            .ok_or_else(|| anyhow::anyhow!("Failed to get exe parent dir"))?;
-
-        let dlls = [
-            "opencv_world460.dll",
-            "opencv_videoio_ffmpeg460_64.dll",
-            "msvcp140.dll",
-            "vcruntime140.dll",
-            "concrt140.dll",
-            "vcruntime140_1.dll",
-            "msvcp140_1.dll",
-        ];
-
-        for dll in &dlls {
-            let src = resource_dir.join("libs").join(dll);
-            let dst = exe_dir.join(dll);
-
-            if src.exists() && !dst.exists() {
-                crate::log_info!("📦 Deploying system DLL to exe dir: {}", dll);
-                if let Err(e) = std::fs::copy(&src, &dst) {
-                    crate::log_warn!("⚠️ Failed to copy {}: {}", dll, e);
+        let windows_libs_dir = resource_dir.join("libs").join("windows");
+        if windows_libs_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&windows_libs_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(filename) = path.file_name() {
+                            let dst = exe_dir.join(filename);
+                            if !dst.exists() {
+                                crate::log_info!("📦 Deploying system DLL to exe dir: {:?}", filename);
+                                if let Err(e) = std::fs::copy(&path, &dst) {
+                                    crate::log_warn!("⚠️ Failed to copy {:?}: {}", filename, e);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    let _ = resource_dir;
+    #[cfg(target_os = "macos")]
+    {
+        let macos_libs_dir = resource_dir.join("libs").join("macos");
+        if macos_libs_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&macos_libs_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_file() || path.is_symlink() {
+                        if let Some(filename) = path.file_name() {
+                            let dst = exe_dir.join(filename);
+                            if !dst.exists() {
+                                crate::log_info!("📦 Deploying system library to exe dir: {:?}", filename);
+                                if let Err(e) = std::fs::copy(&path, &dst) {
+                                    crate::log_warn!("⚠️ Failed to copy {:?}: {}", filename, e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Ok(())
 }

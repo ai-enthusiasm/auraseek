@@ -2,15 +2,12 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use crate::core::models::{SearchMode, SearchQuery, SearchResult, SearchQueryFilters};
+use crate::core::models::{SearchMode, SearchQuery, SearchResult};
 use crate::infrastructure::ai::AuraSeekEngine;
 use crate::infrastructure::database::SurrealDb;
 use crate::infrastructure::database::operations::{DbOperations, row_to_search_result};
 use crate::infrastructure::search::text_search::{encode_text_query, search_by_text_embedding};
 use crate::infrastructure::search::image_search::{encode_image_query, search_by_image_embedding};
-
-const DEFAULT_THRESHOLD: f32 = 0.6;
-const DEFAULT_LIMIT: usize = 10000;
 
 pub struct SearchPipeline;
 
@@ -21,30 +18,34 @@ impl SearchPipeline {
         db: &SurrealDb,
         source_dir: &str,
     ) -> Result<Vec<SearchResult>> {
+        let config = crate::core::config::AppConfig::global();
+        let threshold = config.search_threshold;
+        let limit = config.search_limit;
+
         let raw_hits = match query.mode {
             SearchMode::Text => {
                 let text = query.text.as_deref().unwrap_or("");
-                crate::log_info!("🔍 [SearchPipeline::run] mode=Text text='{}'", text);
+                crate::log_info!("🔍 [SearchPipeline::run] mode=Text text='{}' threshold={}", text, threshold);
                 let embedding = encode_text_query(engine, text)?;
-                search_by_text_embedding(db, &embedding, DEFAULT_THRESHOLD, DEFAULT_LIMIT).await?
+                search_by_text_embedding(db, &embedding, threshold, limit).await?
             }
 
             SearchMode::Image => {
                 let path = query.image_path.as_deref().unwrap_or("");
-                crate::log_info!("🔍 [SearchPipeline::run] mode=Image path='{}' threshold={}", path, DEFAULT_THRESHOLD);
+                crate::log_info!("🔍 [SearchPipeline::run] mode=Image path='{}' threshold={}", path, threshold);
                 let embedding = encode_image_query(engine, path)?;
-                search_by_image_embedding(db, &embedding, DEFAULT_THRESHOLD, DEFAULT_LIMIT).await?
+                search_by_image_embedding(db, &embedding, threshold, limit).await?
             }
 
             SearchMode::Combined => {
                 let text = query.text.as_deref().unwrap_or("");
                 let path = query.image_path.as_deref().unwrap_or("");
-                crate::log_info!("🔍 [SearchPipeline::run] mode=Combined text='{}' path='{}' threshold={}", text, path, DEFAULT_THRESHOLD);
+                crate::log_info!("🔍 [SearchPipeline::run] mode=Combined text='{}' path='{}' threshold={}", text, path, threshold);
 
                 let text_emb  = encode_text_query(engine, text)?;
                 let img_emb   = encode_image_query(engine, path)?;
-                let text_hits = search_by_text_embedding(db, &text_emb, DEFAULT_THRESHOLD, DEFAULT_LIMIT).await?;
-                let img_hits  = search_by_image_embedding(db, &img_emb, DEFAULT_THRESHOLD, DEFAULT_LIMIT).await?;
+                let text_hits = search_by_text_embedding(db, &text_emb, threshold, limit).await?;
+                let img_hits  = search_by_image_embedding(db, &img_emb, threshold, limit).await?;
 
                 crate::log_info!(
                     "🔍 [SearchPipeline::run] combined text_hits={} img_hits={}",

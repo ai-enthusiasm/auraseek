@@ -185,6 +185,8 @@ export function AppTopbar({
             ref={searchInputRef}
             type="text"
             id="search-input"
+            autoComplete="off"
+            spellCheck="false"
             defaultValue={searchQuery}
             onInput={handleInput}
             onCompositionStart={handleCompositionStart}

@@ -3,7 +3,7 @@
 mod core;
 mod shared;
 mod infrastructure;
-#[cfg(feature = "debug-tools")]
+/// Headless pipeline dumps (no Tauri / GTK). Invoked via `auraseek debug-ingest <in> <out>`.
 mod debug;
 mod platform;
 mod app;
@@ -14,6 +14,7 @@ use shared::logging::Logger;
 
 use app::state::AppState;
 use app::helpers::start_db_sidecar;
+use core::config::AppConfig;
 use interface::streaming::spawn_stream_server;
 
 #[macro_export]
@@ -143,27 +144,46 @@ pub fn run() {
 
 fn main() -> Result<()> {
     let _ = dotenvy::dotenv();
+    let cfg = AppConfig::global().clone();
+    let log_path = cfg.log_path.to_string_lossy().to_string();
 
-    let log_path = crate::platform::paths::default_log_path();
-    eprintln!("[main] Log path from default_log_path(): {}", log_path);
-    Logger::init(&log_path);
+    // Force-create the log file early so users can always locate it.
+    if let Some(parent) = cfg.log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&cfg.log_path);
 
-    #[cfg(feature = "debug-tools")]
-    {
-        eprintln!("DEBUG: debug-tools feature is ENABLED");
-        let run_cli_debug_ingest = true;
-        if run_cli_debug_ingest {
-            eprintln!("DEBUG: About to call debug::cli::run_debug_ingest");
-            debug::cli::run_debug_ingest("input1", "output")?;
-            eprintln!("DEBUG: debug::cli::run_debug_ingest completed");
-            return Ok(());
+    let args: Vec<String> = std::env::args().collect();
+
+    // Headless debug export — must run before Tauri (no display / GTK on servers).
+    if args.len() >= 2 && args[1] == "debug-ingest" {
+        if args.len() < 4 {
+            eprintln!(
+                "Usage: {} debug-ingest <input_dir> <output_dir>\n\
+                 Runs the AI debug pipeline only (writes artifacts); does not start the desktop app.",
+                args.first().map(String::as_str).unwrap_or("auraseek")
+            );
+            std::process::exit(2);
         }
+        Logger::init(&log_path);
+        crate::log_info!(
+            "logger ready: {}",
+            Logger::active_log_path().unwrap_or_else(|| log_path.clone())
+        );
+        cfg.log_summary();
+        debug::cli::run_debug_ingest(&args[2], &args[3])?;
+        return Ok(());
     }
 
-    #[cfg(not(feature = "debug-tools"))]
-    {
-        eprintln!("DEBUG: debug-tools feature is NOT ENABLED");
-    }
+    Logger::init(&log_path);
+    crate::log_info!(
+        "logger ready: {}",
+        Logger::active_log_path().unwrap_or_else(|| log_path.clone())
+    );
+    cfg.log_summary();
 
     run();
     Ok(())

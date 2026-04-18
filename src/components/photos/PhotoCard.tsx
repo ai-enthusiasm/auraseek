@@ -75,8 +75,9 @@ export function PhotoCard({
       (photo.detectedFaces   && photo.detectedFaces.length   > 0)
     );
 
-  const imgNaturalW = photo.width  || imgRef.current?.naturalWidth  || 0;
-  const imgNaturalH = photo.height || imgRef.current?.naturalHeight || 0;
+  // Prefer browser-decoded dimensions; metadata may be EXIF-rotated on some files.
+  const imgNaturalW = imgRef.current?.naturalWidth || photo.width || 0;
+  const imgNaturalH = imgRef.current?.naturalHeight || photo.height || 0;
 
   return (
     <button
@@ -93,17 +94,18 @@ export function PhotoCard({
 
         {/* ── Video — show static thumbnail image in grid ──────── */}
         {isVideo ? (
-          <img
+          <div className={cn("h-full w-full bg-black", isSelected && selectionMode && "rounded-lg overflow-hidden")}>
+            <img
             ref={imgRef}
             src={photo.thumbnailUrl || photo.url}
             alt="Video"
             className={cn(
               "h-full w-full select-none object-cover transition-transform duration-500 ease-out",
-              !(isSelected && selectionMode) && "group-hover:scale-[1.03]",
-              isSelected && selectionMode && "rounded-lg"
+              !(isSelected && selectionMode) && "group-hover:scale-[1.03]"
             )}
             draggable={false}
           />
+          </div>
         ) : (
           /* ── Image ──────────────────────────────────────────── */
           <img
@@ -111,9 +113,8 @@ export function PhotoCard({
             src={photo.url}
             alt="Photo"
             className={cn(
-              "h-full w-full select-none object-cover transition-transform duration-500 ease-out",
-              !(isSelected && selectionMode) && "group-hover:scale-[1.03]",
-              isSelected && selectionMode && "rounded-lg"
+              "h-full w-full select-none object-contain bg-black transition-transform duration-500 ease-out",
+              !(isSelected && selectionMode) && "group-hover:scale-[1.03]"
             )}
             draggable={false}
           />
@@ -132,7 +133,7 @@ export function PhotoCard({
               objectFit="cover"
               showFaces={overlayShowFaces}
               showLabels={overlayShowLabels}
-              showMasks
+              showMasks={false}
               showBoxes
             />
           </div>

@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
@@ -19,6 +20,8 @@ pub struct AppState {
     pub watcher_handle: std::sync::Mutex<Option<watcher::FsWatcherHandle>>,
     pub stream_port:   std::sync::atomic::AtomicU16,
     pub abort_sync:    Arc<std::sync::atomic::AtomicBool>,
+    /// Tăng mỗi lần reset thư viện để hủy ingest/scan cũ và không ghi lại `config_auraseek`.
+    pub library_reset_epoch: Arc<AtomicU64>,
 }
 
 impl AppState {
@@ -36,6 +39,12 @@ impl AppState {
             watcher_handle: std::sync::Mutex::new(None),
             stream_port:   std::sync::atomic::AtomicU16::new(0),
             abort_sync:    Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            library_reset_epoch: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    #[inline]
+    pub fn bump_library_reset_epoch(&self) -> u64 {
+        self.library_reset_epoch.fetch_add(1, Ordering::SeqCst) + 1
     }
 }

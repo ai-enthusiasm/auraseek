@@ -14,6 +14,7 @@ import { HiddenView } from "@/views/hidden/HiddenView";
 import { FilteredGalleryView } from "@/views/gallery/FilteredGalleryView";
 import { SearchResultsView } from "@/views/search/SearchResultsView";
 import { FirstRunModal } from "@/components/common/FirstRunModal";
+import { EVENT_FORCE_FIRST_RUN_UI, SESSION_POST_DB_RESET } from "@/components/common/SettingsModal";
 import ModelDownloadScreen, { type ModelDownloadEvent } from "@/components/common/ModelDownloadScreen";
 import { AuraSeekApi, localFileUrl, streamFileUrl, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
 import type { Photo } from "@/types/photo.type";
@@ -52,15 +53,20 @@ function App() {
 
   // First-run and source dir
   const [showFirstRun, setShowFirstRun] = useState(false);
+  /** Tăng sau mỗi lần reset DB để FirstRunModal remount (state input sạch). */
+  const [firstRunKey, setFirstRunKey] = useState(0);
   const [sourceDir, setSourceDir] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
 
   // Sync status
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Tăng khi reset DB để bỏ qua kết quả init async cũ (tránh ghi đè FirstRun / sourceDir). */
+  const initGenerationRef = useRef(0);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    const initGenAtStart = initGenerationRef.current;
     const initialize = async () => {
       console.log("[AuraSeek] 🚀 Initializing app...");
 
@@ -75,6 +81,7 @@ function App() {
       try {
         // 1. Check if model files are present
         const modelsReady = await AuraSeekApi.checkModels();
+        if (initGenerationRef.current !== initGenAtStart) return;
 
         if (!modelsReady) {
           setNeedsDownload(true);
@@ -106,27 +113,47 @@ function App() {
             bytes_done: 0, bytes_total: 0,
           });
         }
+        if (initGenerationRef.current !== initGenAtStart) return;
 
         // 2. Normal initialization (engine + DB)
         const msg = await AuraSeekApi.init();
+        if (initGenerationRef.current !== initGenAtStart) return;
         console.log("[AuraSeek] ✅ Engine + DB ready:", msg);
         setInitError(null);
         setDownloadProgress(null); // hide loading screen now that engine is ready
 
         // Pre-fetch stream port so thumbnail URLs can use it synchronously later
         await AuraSeekApi.getStreamPort().catch(() => null);
+        if (initGenerationRef.current !== initGenAtStart) return;
 
         // Get source_dir from backend
         const dir = await AuraSeekApi.getSourceDir();
-        setSourceDir(dir);
+        if (initGenerationRef.current !== initGenAtStart) return;
 
-        if (!dir) {
-          // First run: show folder picker
+        let forceFirstRunAfterReset = false;
+        try {
+          forceFirstRunAfterReset = sessionStorage.getItem(SESSION_POST_DB_RESET) === "1";
+          if (forceFirstRunAfterReset) {
+            sessionStorage.removeItem(SESSION_POST_DB_RESET);
+          }
+        } catch {
+          /* ignore */
+        }
+
+        if (forceFirstRunAfterReset) {
+          setSourceDir("");
+          setFirstRunKey((k) => k + 1);
           setShowFirstRun(true);
         } else {
-          // Auto-scan in background
-          await loadTimeline();
-          triggerAutoScan();
+          setSourceDir(dir);
+          if (!dir) {
+            setFirstRunKey((k) => k + 1);
+            setShowFirstRun(true);
+          } else {
+            await loadTimeline();
+            if (initGenerationRef.current !== initGenAtStart) return;
+            triggerAutoScan();
+          }
         }
       } catch (err: any) {
         console.warn("[AuraSeek] ⚠️ Init warning:", err);
@@ -158,6 +185,19 @@ function App() {
     await loadTimeline();
     triggerAutoScan();
   }, [triggerAutoScan]);
+
+  /** Đồng bộ UI khi thư viện bị xóa (reset DB từ backend hoặc từ Cài đặt). */
+  const applyLibraryResetToUi = useCallback(() => {
+    initGenerationRef.current += 1;
+    setSourceDir("");
+    setTimelineGroups([]);
+    setPhotos([]);
+    setPeople([]);
+    setSearchResults([]);
+    setRoute({ view: "timeline" });
+    setFirstRunKey((k) => k + 1);
+    setShowFirstRun(true);
+  }, []);
 
   const loadTimeline = useCallback(async () => {
     try {
@@ -461,6 +501,32 @@ function App() {
     };
   }, [loadTimeline]);
 
+  // Reset DB có thể phát từ Rust; tách effect (không phụ thuộc loadTimeline) để tránh race đăng ký/hủy listen.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    listen("database-reset", () => {
+      console.log("[AuraSeek] 🧹 Database reset event received.");
+      if (!cancelled) applyLibraryResetToUi();
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [applyLibraryResetToUi]);
+
+  // Force-first-run event from reset flow (used when backend reset is slow/hangs).
+  useEffect(() => {
+    const forceFirstRun = () => applyLibraryResetToUi();
+    window.addEventListener(EVENT_FORCE_FIRST_RUN_UI, forceFirstRun);
+    return () => window.removeEventListener(EVENT_FORCE_FIRST_RUN_UI, forceFirstRun);
+  }, [applyLibraryResetToUi]);
+
   // ── Render ────────────────────────────────────────────────────────
   const renderView = () => {
     switch (route.view) {
@@ -557,8 +623,6 @@ function App() {
     <SelectionProvider>
       <TooltipProvider>
         <SidebarProvider>
-          {showFirstRun && <FirstRunModal onComplete={handleFirstRunComplete} />}
-
           <AppSidebar
             activeKey={route.view}
             onNavClick={handleNavClick}
@@ -600,6 +664,10 @@ function App() {
             {renderView()}
           </main>
         </SidebarProvider>
+
+        {showFirstRun && (
+          <FirstRunModal key={firstRunKey} onComplete={handleFirstRunComplete} />
+        )}
       </TooltipProvider>
     </SelectionProvider>
   );

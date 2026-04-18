@@ -325,7 +325,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                                                                     return (
                                                                         <img
                                                                             src={src}
-                                                                            className="w-full h-full object-cover"
+                                                                            className={`w-full h-full ${isVideo ? "object-contain bg-black" : "object-cover"}`}
                                                                             loading="lazy"
                                                                         />
                                                                     );

@@ -164,6 +164,7 @@ export function FullScreenVideoViewer({
                     onToggleBbox={() => { }}
                     showMask={false}
                     onToggleMask={() => { }}
+                    enableMaskToggle={false}
                     scale={1}
                     onZoomClick={() => { }}
                     isTrashMode={isTrashMode}

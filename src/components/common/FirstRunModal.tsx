@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { Folder, Check } from "lucide-react";
 import { AuraSeekApi } from "@/lib/api";
 
@@ -32,8 +33,11 @@ export function FirstRunModal({ onComplete }: FirstRunModalProps) {
     }
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+  const shell = (
+    <div
+      className="fixed inset-0 z-[200000] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+      data-auraseek-first-run-overlay
+    >
       <div className="w-full max-w-md rounded-2xl bg-[#1a1a2e] border border-white/10 shadow-2xl p-8 flex flex-col gap-6">
         <div className="text-center">
           <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/20 border border-indigo-500/30">
@@ -77,4 +81,7 @@ export function FirstRunModal({ onComplete }: FirstRunModalProps) {
       </div>
     </div>
   );
+
+  if (typeof document === "undefined") return null;
+  return createPortal(shell, document.body);
 }

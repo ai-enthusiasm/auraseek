@@ -9,6 +9,8 @@ interface FullScreenTopBarProps {
     onToggleBbox: () => void;
     showMask: boolean;
     onToggleMask: () => void;
+  /** Render mask (RLE) toggle button. Default: false (mask disabled globally). */
+  enableMaskToggle?: boolean;
     scale: number;
     onZoomClick: (e: React.MouseEvent) => void;
     isTrashMode: boolean;
@@ -34,6 +36,7 @@ export function FullScreenTopBar({
     onToggleBbox,
     showMask,
     onToggleMask,
+  enableMaskToggle = false,
     scale,
     onZoomClick,
     isTrashMode,
@@ -94,25 +97,27 @@ export function FullScreenTopBar({
                             </TooltipContent>
                         </Tooltip>
 
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={onToggleMask}
-                                    className={`rounded-full transition-colors ${
-                                        showMask
-                                            ? "bg-white/20 text-white hover:bg-white/30"
-                                            : "text-white/80 hover:text-white hover:bg-white/20"
-                                    }`}
-                                >
-                                    <Paintbrush className="w-5 h-5" />
-                                </Button>
-                            </TooltipTrigger>
-                            <TooltipContent side="bottom" className="text-xs">
-                                <p>{showMask ? "Ẩn mask AI" : "Hiện mask AI"}</p>
-                            </TooltipContent>
-                        </Tooltip>
+                        {enableMaskToggle && (
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="icon"
+                                        onClick={onToggleMask}
+                                        className={`rounded-full transition-colors ${
+                                            showMask
+                                                ? "bg-white/20 text-white hover:bg-white/30"
+                                                : "text-white/80 hover:text-white hover:bg-white/20"
+                                        }`}
+                                    >
+                                        <Paintbrush className="w-5 h-5" />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="bottom" className="text-xs">
+                                    <p>{showMask ? "Ẩn mask AI" : "Hiện mask AI"}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        )}
                     </>
                 )}
 

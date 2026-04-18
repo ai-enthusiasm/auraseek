@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use tauri::State;
 use crate::app::state::AppState;
 use crate::app::helpers::{available_ram_percent, restart_fs_watcher};
@@ -49,6 +51,8 @@ pub async fn cmd_auto_scan(
     let db_arc     = state.db.clone();
     let sync_arc   = state.sync_status.clone();
     let dir        = source_dir.clone();
+    let epoch_arc  = state.library_reset_epoch.clone();
+    let epoch_at_invoke = state.library_reset_epoch.load(Ordering::SeqCst);
 
     crate::log_info!("🔄 Auto-scan starting for: {}", dir);
     { let mut st = sync_arc.lock().await; *st = SyncStatus { state: "syncing".into(), processed: 0, total: 0, message: "Đang đồng bộ dữ liệu...".into() }; }
@@ -60,12 +64,26 @@ pub async fn cmd_auto_scan(
     let app_handle = app.clone();
     let abort_flag = state.abort_sync.clone();
     tokio::spawn(async move {
+        if epoch_arc.load(Ordering::SeqCst) != epoch_at_invoke {
+            crate::log_info!("🛑 Auto-scan task dropped (library reset after schedule)");
+            let mut st = sync_arc.lock().await;
+            *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: String::new() };
+            return;
+        }
         if let Some(ref sdb) = *db_arc.lock().await {
             let _ = DbOperations::prune_missing_media(sdb, &dir).await;
         }
         let result = crate::app::ingest::ingest_folder(
-            dir.clone(), db_arc, engine_arc, Some(app_handle), thumb_cache, abort_flag
-        ).await;
+            dir.clone(),
+            db_arc,
+            engine_arc,
+            Some(app_handle),
+            thumb_cache,
+            abort_flag,
+            epoch_arc.clone(),
+            epoch_at_invoke,
+        )
+        .await;
 
         let mut st = sync_arc.lock().await;
         match result {
@@ -90,7 +108,18 @@ pub async fn cmd_scan_folder(
     let db_arc     = state.db.clone();
     let thumb_cache_dir = state.data_dir.lock().unwrap().join("thumbnails");
     let abort_flag = state.abort_sync.clone();
-    crate::app::ingest::ingest_folder(source_path, db_arc, engine_arc, Some(app), Some(thumb_cache_dir), abort_flag)
+    let epoch_arc = state.library_reset_epoch.clone();
+    let epoch_at_invoke = state.library_reset_epoch.load(Ordering::SeqCst);
+    crate::app::ingest::ingest_folder(
+        source_path,
+        db_arc,
+        engine_arc,
+        Some(app),
+        Some(thumb_cache_dir),
+        abort_flag,
+        epoch_arc,
+        epoch_at_invoke,
+    )
         .await.map_err(|e| e.to_string())
 }
 
@@ -142,16 +171,34 @@ pub async fn cmd_cleanup_database(state: State<'_, AppState>) -> Result<usize, S
 }
 
 #[tauri::command]
-pub async fn cmd_reset_database(state: State<'_, AppState>) -> Result<(), String> {
+pub async fn cmd_reset_database(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
+    // 0. Invalidate any in-flight auto-scan / ingest_folder so it cannot resurrect config_auraseek
+    let _new_epoch = state.bump_library_reset_epoch();
+
+    // 1. Signal all background tasks to stop
     state.abort_sync.store(true, std::sync::atomic::Ordering::SeqCst);
     { let mut st = state.sync_status.lock().await; *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: "".into() }; }
+    
+    // 2. Stop the file watcher
     if let Ok(mut guard) = state.watcher_handle.lock() {
         if let Some(handle) = guard.take() { handle.stop(); crate::log_info!("👁️  FS watcher stopped due to database reset"); }
     }
+
+    // 3. Wait a short moment to allow the AI loop to exit its current image processing if active
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // 4. Clear the database and configuration
     let db_guard = state.db.lock().await;
     let db = db_guard.as_ref().ok_or("DB not initialized")?;
     DbOperations::clear_database(db).await.map_err(|e| e.to_string())?;
+    
+    // 5. Reset the source directory in memory
     *state.source_dir.lock().await = String::new();
     crate::log_info!("🧹 Database and configuration reset completed.");
+    
+    // 6. Notify the frontend
+    use tauri::Emitter;
+    let _ = app.emit("database-reset", ());
+
     Ok(())
 }

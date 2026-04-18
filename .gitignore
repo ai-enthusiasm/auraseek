@@ -30,3 +30,4 @@ src-tauri/output/*
 
 # Environment variables (machine-specific)
 src-tauri/.env
+mv.sh

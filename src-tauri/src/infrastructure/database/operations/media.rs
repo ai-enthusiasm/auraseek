@@ -18,12 +18,20 @@ impl DbOperations {
     }
 
     pub async fn check_exact_file(db: &SurrealDb, name: &str, _sha256: &str) -> Result<Option<(String, bool)>> {
-        let mut res = db.db.query("SELECT id, processed FROM media WHERE file.name = $name LIMIT 1")
+        let mut res = db.db.query(
+            "SELECT id, processed, array::len(faces) AS face_count, array::len(objects) AS object_count FROM media WHERE file.name = $name LIMIT 1"
+        )
             .bind(("name", name.to_string())).await?;
         #[derive(serde::Deserialize, SurrealValue)]
-        struct StatusRow { id: RecordId, processed: bool }
+        struct StatusRow { id: RecordId, processed: bool, face_count: Option<u64>, object_count: Option<u64> }
         let rows: Vec<StatusRow> = res.take(0)?;
-        Ok(rows.first().map(|r| (record_id_to_string(&r.id), r.processed)))
+        Ok(rows.first().map(|r| {
+            // Only re-process if it was marked processed but actually has NO data at all (buggy run)
+            let has_any_data = r.face_count.unwrap_or(0) > 0 || r.object_count.unwrap_or(0) > 0;
+            let should_reprocess = r.processed && !has_any_data;
+            
+            (record_id_to_string(&r.id), if should_reprocess { false } else { r.processed })
+        }))
     }
 
     pub async fn insert_media(db: &SurrealDb, doc: MediaDoc) -> Result<String> {

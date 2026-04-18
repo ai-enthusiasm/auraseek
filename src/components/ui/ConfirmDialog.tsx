@@ -1,4 +1,5 @@
 import { Loader2, AlertTriangle, Info } from "lucide-react";
+import { createPortal } from "react-dom";
 import { Button } from "./button";
 
 interface ConfirmDialogProps {
@@ -28,8 +29,9 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4">
+  // Portal to document.body so z-index stacks above Radix Dialog (z-50) and sidebar layers.
+  return createPortal(
+    <div className="fixed inset-0 z-[10050] flex items-center justify-center p-4">
       {/* Backdrop */}
       <div 
         className="absolute inset-0 bg-black/50 backdrop-blur-sm transition-opacity" 
@@ -74,6 +76,7 @@ export function ConfirmDialog({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

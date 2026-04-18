@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{Mutex, mpsc};
 use tauri::Emitter;
@@ -20,7 +21,18 @@ pub async fn ingest_folder(
     app: Option<tauri::AppHandle>,
     thumb_cache_dir: Option<PathBuf>,
     abort_sync: Arc<std::sync::atomic::AtomicBool>,
+    library_epoch: Arc<AtomicU64>,
+    epoch_at_invoke: u64,
 ) -> Result<IngestSummary> {
+    if library_epoch.load(Ordering::SeqCst) != epoch_at_invoke {
+        crate::log_info!("🛑 ingest_folder skipped (library reset / stale epoch)");
+        return Ok(IngestSummary {
+            total_found: 0,
+            newly_added: 0,
+            skipped_dup: 0,
+            errors: 0,
+        });
+    }
     abort_sync.store(false, std::sync::atomic::Ordering::SeqCst);
 
     let source_path = Path::new(&source_dir);

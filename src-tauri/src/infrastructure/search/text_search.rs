@@ -1,5 +1,7 @@
 /// Text-to-embedding search
 use anyhow::Result;
+use unicode_normalization::UnicodeNormalization;
+
 use crate::infrastructure::ai::AuraSeekEngine;
 use crate::infrastructure::database::{SurrealDb, DbOperations};
 
@@ -37,10 +39,12 @@ pub fn encode_text_query(
 
 /// Normalize a search query before BPE tokenization.
 ///
+/// - Unicode NFC (canonical composed) so Telex / VNI / copy-paste diacritics match training.
 /// - Lowercase: PhoBERT vocabulary is all-lowercase.
 /// - Collapse whitespace: trim and collapse multiple spaces.
 fn normalize_text(text: &str) -> String {
-    text.to_lowercase()
+    let nfc: String = text.nfc().collect();
+    nfc.to_lowercase()
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")

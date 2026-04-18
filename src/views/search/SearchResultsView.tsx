@@ -154,8 +154,9 @@ function SearchResultCard({
             (result.detected_faces && result.detected_faces.length > 0)
         );
 
-    const imgNaturalW = result.width || imgRef.current?.naturalWidth || 0;
-    const imgNaturalH = result.height || imgRef.current?.naturalHeight || 0;
+    // Prefer actual decoded image size to avoid EXIF width/height mismatch.
+    const imgNaturalW = imgRef.current?.naturalWidth || result.width || 0;
+    const imgNaturalH = imgRef.current?.naturalHeight || result.height || 0;
     // For videos use the provided thumbnail_path
     let src = localFileUrl(result.file_path);
     if (isVideo && result.thumbnail_path) {
@@ -240,7 +241,7 @@ function SearchResultCard({
                     ref={imgRef}
                     src={src}
                     alt={result.file_path}
-                    className="w-full h-full object-cover"
+                    className={`w-full h-full ${isVideo ? "object-contain bg-black" : "object-cover"}`}
                     onError={() => setImgError(true)}
                 />
             )}

@@ -1,9 +1,9 @@
 use anyhow::Result;
 use crate::infrastructure::database::surreal::SurrealDb;
-use crate::infrastructure::database::models::PersonDoc;
+use crate::infrastructure::database::models::{PersonDoc, FaceEntry, FileInfo, Bbox};
 use crate::core::models::PersonGroup;
-use surrealdb::types::{RecordId, SurrealValue};
-use super::{DbOperations, record_id_to_string};
+use surrealdb::types::SurrealValue;
+use super::DbOperations;
 
 impl DbOperations {
     pub async fn upsert_person(db: &SurrealDb, person: PersonDoc) -> Result<()> {
@@ -36,33 +36,95 @@ impl DbOperations {
     }
 
     pub async fn get_people(db: &SurrealDb, source_dir: &str) -> Result<Vec<PersonGroup>> {
-        let mut res = db.db.query(
-            "SELECT face_id, name, thumbnail, conf, face_bbox,
-                (SELECT count() FROM media WHERE faces.*.face_id CONTAINS $parent.face_id AND deleted_at = NONE AND is_hidden = false GROUP ALL)[0].count AS photo_count,
-                (SELECT file.name FROM media WHERE faces.*.face_id CONTAINS $parent.face_id AND deleted_at = NONE AND is_hidden = false LIMIT 1)[0].file.name AS cover_name
-            FROM person ORDER BY photo_count DESC"
+        #[derive(serde::Deserialize, SurrealValue)]
+        struct MediaFacesRow {
+            file: FileInfo,
+            faces: Vec<FaceEntry>,
+        }
+
+        #[derive(Default, Clone)]
+        struct Agg {
+            photo_count: u32,
+            cover_name: Option<String>,
+            best_conf: Option<f32>,
+            best_bbox: Option<Bbox>,
+            best_cover_name: Option<String>,
+            seen_media_sha: std::collections::HashSet<String>,
+        }
+
+        let mut media_res = db.db.query(
+            "SELECT file, faces FROM media
+             WHERE deleted_at = NONE AND is_hidden = false AND array::len(faces) > 0"
         ).await?;
+        let media_rows: Vec<MediaFacesRow> = media_res.take(0)?;
+
+        let mut agg: std::collections::HashMap<String, Agg> = std::collections::HashMap::new();
+        for row in media_rows {
+            for f in row.faces {
+                let entry = agg.entry(f.face_id.clone()).or_default();
+                if entry.seen_media_sha.insert(row.file.sha256.clone()) {
+                    entry.photo_count += 1;
+                }
+                if entry.cover_name.is_none() {
+                    entry.cover_name = Some(row.file.name.clone());
+                }
+                let should_replace = match (entry.best_conf, f.conf) {
+                    (None, _) => true,
+                    (Some(prev), cur) => cur > prev,
+                };
+                if should_replace {
+                    entry.best_conf = Some(f.conf);
+                    entry.best_bbox = Some(f.bbox.clone());
+                    entry.best_cover_name = Some(row.file.name.clone());
+                }
+            }
+        }
 
         #[derive(serde::Deserialize, SurrealValue)]
-        struct PRow {
-            face_id: String, name: Option<String>, thumbnail: Option<String>,
-            conf: Option<f32>, face_bbox: Option<crate::infrastructure::database::models::Bbox>,
-            photo_count: Option<u64>, cover_name: Option<String>,
+        struct PersonRow {
+            face_id: String,
+            name: Option<String>,
+            thumbnail: Option<String>,
+            conf: Option<f32>,
+            face_bbox: Option<Bbox>,
         }
-        let rows: Vec<PRow> = res.take(0)?;
+        let mut person_res = db.db.query(
+            "SELECT face_id, name, thumbnail, conf, face_bbox FROM person"
+        ).await?;
+        let person_rows: Vec<PersonRow> = person_res.take(0)?;
+        let person_map: std::collections::HashMap<String, PersonRow> = person_rows
+            .into_iter()
+            .map(|p| (p.face_id.clone(), p))
+            .collect();
+
         let base = source_dir.trim_end_matches('/');
-        Ok(rows.into_iter().map(|r| {
-            let cover_path = r.cover_name.as_ref().map(|n| format!("{}/{}", base, n));
-            let thumbnail = r.thumbnail.map(|t| {
+        let mut rows: Vec<PersonGroup> = agg.into_iter().map(|(face_id, a)| {
+            let person = person_map.get(&face_id);
+            // Keep cover image consistent with bbox source to avoid wrong/blank avatar crop.
+            let cover_name = a.best_cover_name.clone().or(a.cover_name.clone());
+            let cover_path = cover_name.as_ref().map(|n| format!("{}/{}", base, n));
+            let thumb_raw = person
+                .and_then(|p| p.thumbnail.clone())
+                .or_else(|| cover_name.clone());
+            let thumbnail = thumb_raw.map(|t| {
                 if std::path::Path::new(&t).is_absolute() { t } else { format!("{}/{}", base, t) }
             });
+            let conf = person.and_then(|p| p.conf).or(a.best_conf);
+            let bbox = person
+                .and_then(|p| p.face_bbox.clone())
+                .or(a.best_bbox.clone());
             PersonGroup {
-                face_id: r.face_id, name: r.name,
-                photo_count: r.photo_count.unwrap_or(0) as u32,
-                cover_path, thumbnail, conf: r.conf,
-                face_bbox: r.face_bbox.map(|b| crate::core::models::BboxInfo { x: b.x, y: b.y, w: b.w, h: b.h }),
+                face_id,
+                name: person.and_then(|p| p.name.clone()),
+                photo_count: a.photo_count,
+                cover_path,
+                thumbnail,
+                conf,
+                face_bbox: bbox.map(|b| crate::core::models::BboxInfo { x: b.x, y: b.y, w: b.w, h: b.h }),
             }
-        }).collect())
+        }).collect();
+        rows.sort_by(|a, b| b.photo_count.cmp(&a.photo_count).then_with(|| a.face_id.cmp(&b.face_id)));
+        Ok(rows)
     }
 
     pub async fn merge_people(db: &SurrealDb, target_face_id: &str, source_face_id: &str) -> Result<()> {

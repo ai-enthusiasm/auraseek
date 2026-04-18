@@ -40,10 +40,7 @@ tar = "0.4"
 thiserror = "2.0.18"
 num_cpus = "1.17.0"
 dotenvy = "0.15.7"
-
-[features]
-default = []
-debug-tools = []
+unicode-normalization = "0.1"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

@@ -43,7 +43,10 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
             let _ = std::fs::create_dir_all(data_dir.join("face_db"));
             let config = crate::infrastructure::ai::engine::EngineConfig::new_with_dir(&data_dir);
             match AuraSeekEngine::new(config) {
-                Ok(e) => { crate::log_info!("✅ AI engine ready"); *engine_guard = Some(e); }
+                Ok(e) => {
+                    crate::log_info!("✅ AI engine ready | face_model_loaded={}", e.face.is_some());
+                    *engine_guard = Some(e);
+                }
                 Err(e) => return Err(format!("Engine init failed: {}. Download models first.", e)),
             }
         }
