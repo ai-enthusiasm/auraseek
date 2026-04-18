@@ -19,11 +19,12 @@ export function PhotoGrid({
   overlayShowLabels  = true,
 }: PhotoGridProps) {
   return (
-    <div className="grid gap-1 sm:gap-1.5 md:gap-2 lg:gap-2.5 xl:gap-3 grid-cols-[repeat(auto-fill,minmax(160px,1fr))]">
+    <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 mb-8">
       {photos.map((photo) => (
         <PhotoCard
           key={photo.id}
           photo={photo}
+          className="aspect-[4/3] w-full"
           onClick={onPhotoClick ? () => onPhotoClick(photo) : undefined}
           selectionMode={selectionMode}
           showBbox={showBbox}

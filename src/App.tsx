@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { SidebarProvider } from "@/components/ui/sidebar";
-import { AppSidebar } from "./components/layout/AppSidebar";
-import { AppTopbar } from "./components/layout/AppTopbar";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { NewLayout } from "./components/layout/NewLayout";
 import { SelectionProvider } from "@/contexts/SelectionContext";
 import { TimelineView } from "@/views/timeline";
 import { PeopleView } from "@/views/people/PeopleView";
@@ -15,8 +13,9 @@ import { FilteredGalleryView } from "@/views/gallery/FilteredGalleryView";
 import { SearchResultsView } from "@/views/search/SearchResultsView";
 import { FirstRunModal } from "@/components/common/FirstRunModal";
 import { EVENT_FORCE_FIRST_RUN_UI, SESSION_POST_DB_RESET } from "@/components/common/SettingsModal";
+import { LandingPage } from "@/views/LandingPage";
 import ModelDownloadScreen, { type ModelDownloadEvent } from "@/components/common/ModelDownloadScreen";
-import { AuraSeekApi, localFileUrl, streamFileUrl, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
+import { AuraSeekApi, localFileUrl, streamFileUrl, warmStreamPortCache, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
 import type { Photo } from "@/types/photo.type";
 
 type AppRoute = {
@@ -33,6 +32,7 @@ export type ActiveFilters = {
 };
 
 function App() {
+  const [hasStarted, setHasStarted] = useState(false);
   const [route, setRoute] = useState<AppRoute>({ view: "timeline" });
   const [searchQuery, setSearchQuery] = useState("");
   const [searchImagePath, setSearchImagePath] = useState<string | null>(null);
@@ -107,7 +107,7 @@ function App() {
           // Keep screen up while engine loads models into RAM
           setDownloadProgress({
             file: "", progress: 1.0,
-            message: "Đang khởi động AI Engine...",
+            message: "Đang chuẩn bị hệ thống...",
             done: false, error: "",
             file_index: 0, file_total: 0,
             bytes_done: 0, bytes_total: 0,
@@ -122,8 +122,8 @@ function App() {
         setInitError(null);
         setDownloadProgress(null); // hide loading screen now that engine is ready
 
-        // Pre-fetch stream port so thumbnail URLs can use it synchronously later
-        await AuraSeekApi.getStreamPort().catch(() => null);
+        // Warm stream port cache so `streamFileUrlSync()` can serve thumbnails reliably
+        await warmStreamPortCache();
         if (initGenerationRef.current !== initGenAtStart) return;
 
         // Get source_dir from backend
@@ -202,7 +202,9 @@ function App() {
   const loadTimeline = useCallback(async () => {
     try {
       console.log("[AuraSeek] 📅 Loading timeline...");
-      const groups = await AuraSeekApi.getTimeline();
+      
+      let groups = await AuraSeekApi.getTimeline();
+      
       setTimelineGroups(groups);
       console.log("[AuraSeek] 📅 Timeline loaded:", groups.length, "groups");
 
@@ -465,7 +467,7 @@ function App() {
     setSearchResults([]);
     setSearchQuery("");
     setSearchImagePath(null);
-    if (key === "timeline") loadTimeline();
+    if (key === "timeline" || key === "all") loadTimeline();
     if (key === "people") { loadPeople(); loadTimeline(); }
   }, [loadTimeline, loadPeople]);
 
@@ -604,6 +606,16 @@ function App() {
         return <TrashView />;
       case "hidden":
         return <HiddenView />;
+      case "all":
+        return (
+          <TimelineView
+            timelineGroups={timelineGroups}
+            photos={photos}
+            searchQuery={searchQuery}
+            isLoading={!isInitialized}
+            selectionMode={selectionMode}
+          />
+        );
       case "timeline":
       default:
         return (
@@ -619,55 +631,56 @@ function App() {
     }
   };
 
+  if (!hasStarted) {
+    return <LandingPage onStart={() => setHasStarted(true)} />;
+  }
+
   return (
     <SelectionProvider>
       <TooltipProvider>
-        <SidebarProvider>
-          <AppSidebar
-            activeKey={route.view}
-            onNavClick={handleNavClick}
-            sourceDir={sourceDir}
-            onSourceDirChange={setSourceDir}
-          />
-
-          {/* Global drag-over indicator */}
-          {isDragOver && (
-            <div className="fixed inset-0 z-100 pointer-events-none flex items-center justify-center bg-indigo-500/10 backdrop-blur-[2px] border-4 border-dashed border-indigo-400/60 rounded-xl m-2">
-              <div className="bg-background/90 rounded-2xl px-8 py-5 shadow-2xl border border-indigo-400/30 text-center">
-                <p className="text-lg font-semibold text-indigo-400">Thả ảnh vào đây</p>
-                <p className="text-sm text-muted-foreground mt-1">Ảnh sẽ được lưu vào thư mục nguồn và xử lý AI tự động</p>
-              </div>
-            </div>
-          )}
-
-          {/* Model download / first-run loading screen */}
-          {(needsDownload || (downloadProgress && !isInitialized)) && (
-            <ModelDownloadScreen event={downloadProgress} />
-          )}
-
-          <main className="flex flex-col flex-1 h-screen overflow-hidden">
-            <AppTopbar
-              searchQuery={searchQuery}
-              onSearchQueryChange={setSearchQuery}
-              searchImagePath={searchImagePath}
-              onSearchImageChange={setSearchImagePath}
-              onSearchSubmit={handleSearchSubmit}
-              isSearching={isSearching}
-              onFiltersChange={handleFiltersChange}
-              activeFilters={activeFilters}
-              initError={initError}
-              selectionMode={selectionMode}
-              onSelectionModeChange={setSelectionMode}
-              syncStatus={syncStatus}
-              onReload={handleReload}
-            />
-            {renderView()}
-          </main>
-        </SidebarProvider>
-
+        {/* First-run Modal (Logic from 5eacb87) */}
         {showFirstRun && (
           <FirstRunModal key={firstRunKey} onComplete={handleFirstRunComplete} />
         )}
+
+        {/* Global drag-over indicator */}
+        {isDragOver && (
+          <div className="fixed inset-0 z-[100] pointer-events-none flex items-center justify-center bg-indigo-500/10 backdrop-blur-[2px] border-4 border-dashed border-indigo-400/60 rounded-xl m-2">
+            <div className="bg-background/90 rounded-2xl px-8 py-5 shadow-2xl border border-indigo-400/30 text-center">
+              <p className="text-lg font-semibold text-indigo-400">Thả ảnh vào đây</p>
+              <p className="text-sm text-muted-foreground mt-1">Ảnh sẽ được lưu vào thư mục nguồn và xử lý AI tự động</p>
+            </div>
+          </div>
+        )}
+
+        {/* Model download / first-run loading screen */}
+        {(needsDownload || (downloadProgress && !isInitialized)) && (
+          <ModelDownloadScreen event={downloadProgress} />
+        )}
+
+        {/* New Layout Structure (UI from current) */}
+        <NewLayout
+          activeKey={route.view}
+          onNavClick={handleNavClick}
+          sourceDir={sourceDir}
+          onSourceDirChange={setSourceDir}
+          searchQuery={searchQuery}
+          onSearchQueryChange={setSearchQuery}
+          searchImagePath={searchImagePath}
+          onSearchImageChange={setSearchImagePath}
+          onSearchSubmit={handleSearchSubmit}
+          isSearching={isSearching}
+          onFiltersChange={handleFiltersChange}
+          activeFilters={activeFilters}
+          initError={initError}
+          selectionMode={selectionMode}
+          onSelectionModeChange={setSelectionMode}
+          syncStatus={syncStatus}
+          totalImages={photos.length}
+          onReload={handleReload}
+        >
+          {renderView()}
+        </NewLayout>
       </TooltipProvider>
     </SelectionProvider>
   );

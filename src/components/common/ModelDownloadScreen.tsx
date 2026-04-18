@@ -112,7 +112,7 @@ export default function ModelDownloadScreen({ event }: Props) {
             <div className="absolute -inset-1 rounded-[18px] border-2 border-indigo-500/30 border-t-indigo-500 animate-spin" />
           </div>
           <h1 className="text-2xl font-bold text-white tracking-tight">AuraSeek</h1>
-          <p className="text-sm text-white/50 mt-1">Đang chuẩn bị AI Engine lần đầu</p>
+          <p className="text-sm text-white/50 mt-1">Đang chuẩn bị hệ thống lần đầu</p>
         </div>
 
         {/* Error state */}

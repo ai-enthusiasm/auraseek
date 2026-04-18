@@ -148,8 +148,8 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                         </h1>
                         <p className="text-muted-foreground text-sm max-w-lg">
                             {isVideo
-                                ? "Phát hiện video trùng lặp bằng Hash + AI phân tích nội dung đoạn đầu (ngưỡng ≥ 97%). Gom nhóm để bạn dễ dàng dọn dẹp."
-                                : "Phát hiện ảnh trùng lặp bằng Hash chính xác, pHash nhận diện ảnh tương tự, và AI embedding (ngưỡng ≥ 97%)."}
+                                ? "Hệ thống tự động quét và phân loại các video giống nhau giúp bạn dọn dẹp thư viện dễ dàng hơn."
+                                : "Hệ thống tự động quét và nhóm các bức ảnh giống hoặc tương tự nhau, giúp bạn có thể chọn giữ lại ảnh đẹp nhất."}
                         </p>
                     </div>
                     <div className="flex gap-2">
@@ -177,7 +177,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
 
                 {/* Summary bar */}
                 {!isLoading && !error && groups.length > 0 && (
-                    <div className="flex items-center justify-between p-4 bg-muted/40 rounded-2xl border border-border/20 gap-4 flex-wrap">
+                    <div className="flex items-center justify-between p-4 glass rounded-2xl border border-border/20 gap-4 flex-wrap shadow-soft transition-smooth">
                         <div className="flex gap-6">
                             <div>
                                 <div className="text-xs text-muted-foreground mb-0.5">Nhóm trùng lặp</div>
@@ -247,7 +247,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
 
                             return (
                                 <div key={group.group_id}
-                                    className="bg-background rounded-2xl border border-border/30 overflow-hidden shadow-sm"
+                                    className="bg-background rounded-2xl border border-border/30 overflow-hidden shadow-soft transition-smooth"
                                 >
                                     {/* Group header */}
                                     <div
@@ -295,7 +295,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                                                 return (
                                                     <div
                                                         key={item.media_id}
-                                                        className="snap-start shrink-0 flex flex-col gap-2 cursor-pointer"
+                                                        className="snap-start shrink-0 flex flex-col gap-2 cursor-pointer hover-lift group"
                                                         style={{ width: isVideo ? 240 : 176 }}
                                                         onClick={() => toggleMark(group.group_id, item.media_id)}
                                                     >

@@ -19,7 +19,7 @@
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  --radius: 0.625rem;
+  --radius: 1.125rem;
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -181,4 +181,43 @@ body,
   .custom-zoom-slider::-moz-range-thumb:hover {
     transform: scale(1.15);
   }
+
+  .transition-smooth {
+    @apply transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)];
+  }
+
+  .glass, .glassmorphism {
+    @apply bg-background/70 backdrop-blur-xl border-border/40 shadow-sm;
+  }
+
+  .glass-card {
+    @apply bg-card/60 backdrop-blur-lg border-border/30 shadow-[0_8px_30px_rgb(0,0,0,0.04)] dark:shadow-[0_8px_30px_rgb(0,0,0,0.1)];
+  }
+
+  .hover-lift {
+    @apply transition-all duration-300 ease-[cubic-bezier(0.23,1,0.32,1)] hover:-translate-y-1 hover:shadow-xl;
+  }
+
+  .shadow-soft {
+    box-shadow: 0 10px 40px -10px rgba(0,0,0,0.08);
+  }
+  .dark .shadow-soft {
+    box-shadow: 0 10px 40px -10px rgba(0,0,0,0.2);
+  }
+}
+
+/* Modern thin scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted-foreground);
 }

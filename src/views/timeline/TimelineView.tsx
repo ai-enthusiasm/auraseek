@@ -52,11 +52,16 @@ export function TimelineView({
           })
           .map(item => {
             const isVideo = item.media_type === "video";
-            const url = localFileUrl(item.file_path);
+            const isMock = item.media_id.startsWith("mock-");
+            
+            const url = isMock ? item.file_path : localFileUrl(item.file_path);
+            
             // Use streamFileUrlSync for absolute paths (cached thumbs in data dir), else fallback cleanly.
             let thumbnailUrl = undefined;
             if (item.thumbnail_path) {
-              if (item.thumbnail_path.startsWith("/") || item.thumbnail_path.match(/^[A-Za-z]:\\/)) {
+              if (isMock) {
+                thumbnailUrl = item.thumbnail_path;
+              } else if (item.thumbnail_path.startsWith("/") || item.thumbnail_path.match(/^[A-Za-z]:\\/)) {
                 thumbnailUrl = streamFileUrlSync(item.thumbnail_path);
               } else {
                 thumbnailUrl = localFileUrl(item.thumbnail_path);
@@ -107,9 +112,15 @@ export function TimelineView({
 
     for (const photo of filteredPhotos) {
       const date = new Date(photo.takenAt);
-      const id = `${date.getFullYear()}-${date.getMonth() + 1}`;
-      const label = new Intl.DateTimeFormat("vi-VN", { month: "long", year: "numeric" })
-        .format(date);
+      const id = `${date.getFullYear()}-${date.getMonth() + 1}-${date.getDate()}`;
+      
+      const weekday = new Intl.DateTimeFormat("vi-VN", { weekday: "long" }).format(date);
+      const day = new Intl.DateTimeFormat("vi-VN", { day: "2-digit" }).format(date);
+      const month = new Intl.DateTimeFormat("vi-VN", { month: "2-digit" }).format(date);
+      const year = new Intl.DateTimeFormat("vi-VN", { year: "numeric" }).format(date);
+      
+      const label = `${weekday}, ngày ${day} tháng ${month} năm ${year}`;
+      
       const existing = map.get(id);
       if (!existing) {
         map.set(id, { id, label, photos: [photo] });
@@ -124,7 +135,7 @@ export function TimelineView({
     <div className="flex relative h-full flex-1 flex-col overflow-hidden">
       <div
         id="timeline-scroll-container"
-        className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 relative"
+        className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 relative bg-white"
       >
         {/* Loading skeleton */}
         {isLoading && (
@@ -159,10 +170,11 @@ export function TimelineView({
 
         <div className="space-y-6 sm:space-y-8 pr-6">
           {sections.map((section) => (
-            <section key={section.id} id={`section-${section.id}`} className="space-y-3 pt-2">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/60 px-4 py-1.5 text-[13px] font-bold text-slate-100 shadow-2xl backdrop-blur-md">
-                {section.label}
-                <span className="text-[11px] font-medium text-slate-400">· {section.photos.length} mục</span>
+            <section key={section.id} id={`section-${section.id}`} className="space-y-6 pt-4">
+              <div className="flex items-center justify-between mb-4 px-1">
+                <div className="font-['Montserrat'] font-semibold text-[17px] text-zinc-600 dark:text-zinc-400 tracking-wide">
+                  {section.label}
+                </div>
               </div>
 
               <PhotoGrid

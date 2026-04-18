@@ -13,6 +13,7 @@ type PhotoCardProps = {
   showBbox?: boolean;
   overlayShowFaces?: boolean;
   overlayShowLabels?: boolean;
+  className?: string;
 };
 
 export function PhotoCard({
@@ -22,6 +23,7 @@ export function PhotoCard({
   showBbox          = false,
   overlayShowFaces  = true,
   overlayShowLabels = true,
+  className,
 }: PhotoCardProps) {
 
   const { selectedIds, toggleSelection } = useSelection();
@@ -85,10 +87,10 @@ export function PhotoCard({
       onClick={selectionMode ? handleSelect : onClick}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      className="group relative block aspect-4/3 overflow-hidden bg-background"
+      className={cn("group relative block overflow-hidden bg-zinc-200 dark:bg-zinc-800 rounded-2xl shadow-sm transition-shadow hover:shadow-xl", className || "w-full h-full")}
     >
       <div className={cn(
-        "w-full h-full transition-all duration-200 ease-out relative",
+        "w-full h-full transition-all duration-300 ease-out relative",
         isSelected && selectionMode ? "p-3" : "p-0"
       )}>
 
@@ -100,8 +102,9 @@ export function PhotoCard({
             src={photo.thumbnailUrl || photo.url}
             alt="Video"
             className={cn(
-              "h-full w-full select-none object-cover transition-transform duration-500 ease-out",
-              !(isSelected && selectionMode) && "group-hover:scale-[1.03]"
+              "h-full w-full select-none object-cover transition-transform duration-700 ease-out",
+              !(isSelected && selectionMode) && "group-hover:scale-110",
+              isSelected && selectionMode && "rounded-xl"
             )}
             draggable={false}
           />
@@ -113,8 +116,9 @@ export function PhotoCard({
             src={photo.url}
             alt="Photo"
             className={cn(
-              "h-full w-full select-none object-contain bg-black transition-transform duration-500 ease-out",
-              !(isSelected && selectionMode) && "group-hover:scale-[1.03]"
+              "h-full w-full select-none object-cover transition-transform duration-700 ease-out",
+              !(isSelected && selectionMode) && "group-hover:scale-110",
+              isSelected && selectionMode && "rounded-xl"
             )}
             draggable={false}
           />
