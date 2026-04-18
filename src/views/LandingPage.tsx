@@ -11,21 +11,28 @@ export function LandingPage({ onStart }: LandingPageProps) {
       {/* Nền video (trung tâm) */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
         <video 
-          src="/logo/Started.mp4" 
+          src="/logo/Start.mp4" 
           autoPlay 
           loop 
           muted 
           playsInline
           className="w-full max-w-[800px] object-contain opacity-90 scale-125 md:scale-150 transform translate-y-[-5%]" 
         />
-        {/* Lớp phủ gradient mờ đi để video dễ chịu hơn */}
+        {/* Lớp phủ gradient */}
         <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_center,transparent_20%,#020205_70%)]" />
+      </div>
+
+      {/* Chữ AURASEEK to ở giữa màn hình, chồng lên video */}
+      <div className="absolute inset-0 flex items-center justify-center z-5 pointer-events-none">
+        <h1 className="text-white/90 font-light text-[clamp(2rem,6vw,4rem)] tracking-[1em] uppercase select-none drop-shadow-[0_0_30px_rgba(138,43,226,0.4)] font-['Montserrat']">
+          AURASEEK
+        </h1>
       </div>
 
       {/* Header (Logo trái, Nút Bắt đầu phải) */}
       <div className="relative z-10 w-full flex items-center justify-between px-8 py-6 md:px-4 md:py-4">
-        <div className="flex flex-col items-center gap-1 cursor-default">
-          <img src="/logo/Logo.png" alt="AuraSeek" className="w-24 h-24 object-contain drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]" />
+        <div className="flex flex-col items-start gap-0.5 cursor-default">
+          <img src="/logo/Logo.png" alt="AuraSeek" className="w-20 h-20 object-contain drop-shadow-[0_0_10px_rgba(255,255,255,0.2)]" />
         </div>
         <Button 
           onClick={onStart}
