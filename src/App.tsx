@@ -47,6 +47,8 @@ function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  /** Chỉ bật khi init / first-run cần chặn timeline — tránh ingest `loadTimeline` nhấp nháy. */
+  const [timelineBlockingLoad, setTimelineBlockingLoad] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
@@ -141,18 +143,23 @@ function App() {
         }
 
         if (forceFirstRunAfterReset) {
+          console.log("[AuraSeek] 🔄 Force First Run after DB reset");
           setSourceDir("");
           setFirstRunKey((k) => k + 1);
           setShowFirstRun(true);
         } else {
-          setSourceDir(dir);
+          console.log("[AuraSeek] 📁 Backend source_dir:", dir);
+          setSourceDir(dir || "");
           if (!dir) {
             setFirstRunKey((k) => k + 1);
             setShowFirstRun(true);
           } else {
-            await loadTimeline();
-            if (initGenerationRef.current !== initGenAtStart) return;
-            triggerAutoScan();
+            // Không chặn isInitialized / thread init đến khi resolve hết streamFileUrl (có thể rất lâu).
+            setIsInitialized(true);
+            void loadTimeline({ blocking: true }).then(() => {
+              if (initGenerationRef.current !== initGenAtStart) return;
+              triggerAutoScan();
+            });
           }
         }
       } catch (err: any) {
@@ -179,16 +186,10 @@ function App() {
     }
   }, []);
 
-  const handleFirstRunComplete = useCallback(async (dir: string) => {
-    setSourceDir(dir);
-    setShowFirstRun(false);
-    await loadTimeline();
-    triggerAutoScan();
-  }, [triggerAutoScan]);
-
   /** Đồng bộ UI khi thư viện bị xóa (reset DB từ backend hoặc từ Cài đặt). */
   const applyLibraryResetToUi = useCallback(() => {
     initGenerationRef.current += 1;
+    setTimelineBlockingLoad(false);
     setSourceDir("");
     setTimelineGroups([]);
     setPhotos([]);
@@ -199,53 +200,88 @@ function App() {
     setShowFirstRun(true);
   }, []);
 
-  const loadTimeline = useCallback(async () => {
+  const loadTimeline = useCallback(async (opts?: { blocking?: boolean }) => {
+    const blocking = opts?.blocking === true;
+    if (blocking) setTimelineBlockingLoad(true);
     try {
       console.log("[AuraSeek] 📅 Loading timeline...");
-      
-      let groups = await AuraSeekApi.getTimeline();
-      
+
+      const groups = await AuraSeekApi.getTimeline();
+
       setTimelineGroups(groups);
       console.log("[AuraSeek] 📅 Timeline loaded:", groups.length, "groups");
 
-      const allPhotos: Photo[] = await Promise.all(groups.flatMap(g =>
-        g.items.map(async item => {
-          // Video thumbnails are absolute paths in the thumbnails cache dir.
-          // Serve them via the local Axum HTTP server to bypass WebKit asset:// restrictions.
+      const isAbsThumbPath = (p: string) =>
+        p.startsWith("/") || /^[A-Za-z]:\\/.test(p);
+
+      const itemToPhoto = (item: (typeof groups)[0]["items"][0], thumbnailUrl?: string): Photo => ({
+        id: item.media_id,
+        url: localFileUrl(item.file_path),
+        takenAt: item.created_at || new Date().toISOString(),
+        createdAt: item.created_at || new Date().toISOString(),
+        sizeBytes: 0,
+        width: item.width || 0,
+        height: item.height || 0,
+        objects: item.objects,
+        faces: item.faces,
+        faceIds: item.face_ids,
+        type: item.media_type as "photo" | "video",
+        labels: item.objects,
+        favorite: item.favorite,
+        detectedObjects: item.detected_objects,
+        detectedFaces: item.detected_faces,
+        thumbnailUrl,
+        filePath: item.file_path,
+      });
+
+      // Pha 1: đồng bộ — không chờ streamFileUrl (tránh treo UI phút chục với nhiều video).
+      const quickPhotos: Photo[] = groups.flatMap((g) =>
+        g.items.map((item) => {
           let thumbnailUrl: string | undefined;
           if (item.thumbnail_path) {
-            if (item.thumbnail_path.startsWith("/") || item.thumbnail_path.match(/^[A-Za-z]:\\/)) {
-              thumbnailUrl = await streamFileUrl(item.thumbnail_path);
+            if (isAbsThumbPath(item.thumbnail_path)) {
+              thumbnailUrl = undefined;
             } else {
               thumbnailUrl = localFileUrl(item.thumbnail_path);
             }
           }
-          return {
-            id: item.media_id,
-            url: localFileUrl(item.file_path),
-            takenAt: item.created_at || new Date().toISOString(),
-            createdAt: item.created_at || new Date().toISOString(),
-            sizeBytes: 0,
-            width: item.width || 0,
-            height: item.height || 0,
-            objects: item.objects,
-            faces: item.faces,
-            faceIds: item.face_ids,
-            type: item.media_type as "photo" | "video",
-            labels: item.objects,
-            favorite: item.favorite,
-            detectedObjects: item.detected_objects,
-            detectedFaces: item.detected_faces,
-            thumbnailUrl,
-            filePath: item.file_path,
-          };
+          return itemToPhoto(item, thumbnailUrl);
         })
-      ));
-      setPhotos(allPhotos);
+      );
+      setPhotos(quickPhotos);
+      if (blocking) setTimelineBlockingLoad(false);
+
+      // Pha 2: hydrate thumbnail cache (đường tuyệt đối) nền.
+      const hydrated: Photo[] = await Promise.all(
+        groups.flatMap((g) =>
+          g.items.map(async (item) => {
+            let thumbnailUrl: string | undefined;
+            if (item.thumbnail_path) {
+              if (isAbsThumbPath(item.thumbnail_path)) {
+                thumbnailUrl = await streamFileUrl(item.thumbnail_path);
+              } else {
+                thumbnailUrl = localFileUrl(item.thumbnail_path);
+              }
+            }
+            return itemToPhoto(item, thumbnailUrl);
+          })
+        )
+      );
+      setPhotos(hydrated);
     } catch (err) {
       console.warn("[AuraSeek] ⚠️ Timeline load failed:", err);
+    } finally {
+      if (blocking) setTimelineBlockingLoad(false);
     }
-  }, [localFileUrl, streamFileUrl]);
+  }, []);
+
+  const handleFirstRunComplete = useCallback(async (dir: string) => {
+    setSourceDir(dir);
+    setShowFirstRun(false);
+    setHasStarted(true); // Direct access after setup
+    await loadTimeline({ blocking: true });
+    triggerAutoScan();
+  }, [loadTimeline, triggerAutoScan]);
 
   // Global perpetual SyncStatus poller (essential for fs_watcher background events)
   useEffect(() => {
@@ -597,7 +633,7 @@ function App() {
             timelineGroups={timelineGroups}
             photos={photos}
             searchQuery={searchQuery}
-            isLoading={!isInitialized}
+            isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
             mediaType="video"
           />
@@ -612,7 +648,7 @@ function App() {
             timelineGroups={timelineGroups}
             photos={photos}
             searchQuery={searchQuery}
-            isLoading={!isInitialized}
+            isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
           />
         );
@@ -623,7 +659,7 @@ function App() {
             timelineGroups={timelineGroups}
             photos={photos}
             searchQuery={searchQuery}
-            isLoading={!isInitialized}
+            isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
             mediaType="photo"
           />
@@ -631,7 +667,8 @@ function App() {
     }
   };
 
-  if (!hasStarted) {
+  // If it's the first run, we skip the landing page to show the setup modal immediately
+  if (!hasStarted && !showFirstRun) {
     return <LandingPage onStart={() => setHasStarted(true)} />;
   }
 
