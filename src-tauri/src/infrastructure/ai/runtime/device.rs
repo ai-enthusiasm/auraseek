@@ -9,14 +9,5 @@ pub fn selected_device() -> &'static str {
 }
 
 fn detect_best_device() -> &'static str {
-    #[cfg(feature = "cuda")]
-    {
-        if ort::execution_providers::CUDAExecutionProvider::default()
-            .build()
-            .is_available()
-        {
-            return "cuda";
-        }
-    }
     "cpu"
 }

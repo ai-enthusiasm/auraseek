@@ -1,8 +1,9 @@
-/// Image-to-embedding search – SurrealDB edition
+/// Image-to-embedding search
 use anyhow::Result;
 use crate::infrastructure::ai::AuraSeekEngine;
 use crate::infrastructure::ai::vision::preprocess_aura;
-use crate::infrastructure::database::{SurrealDb, DbOperations};
+use qdrant_client::Qdrant;
+use crate::infrastructure::database::DbOperations;
 
 pub fn encode_image_query(
     engine: &mut AuraSeekEngine,
@@ -16,10 +17,11 @@ pub fn encode_image_query(
 }
 
 pub async fn search_by_image_embedding(
-    db: &SurrealDb,
+    client: &Qdrant,
+    collection: &str,
     embedding: &[f32],
     threshold: f32,
     limit: usize,
 ) -> Result<Vec<(String, f32)>> {
-    DbOperations::vector_search(db, embedding, threshold, limit).await
+    DbOperations::vector_search(client, collection, embedding, threshold, limit).await
 }

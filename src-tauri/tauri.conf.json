@@ -39,38 +39,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": [],
-    "resources": [
-      "libs/macos/**/*",
-      "libs/windows/**/*"
-    ],
-    "macOS": {},
-    "windows": {},
-    "linux": {
-      "deb": {
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0",
-          "libsoup-3.0-0",
-          "libglib2.0-0",
-          "libgdk-pixbuf-2.0-0",
-          "libpango-1.0-0",
-          "libcairo2",
-          "libgcc-s1",
-          "libc6",
-          "ffmpeg",
-          "libopencv-core406t64",
-          "libopencv-imgproc406t64",
-          "libopencv-imgcodecs406t64",
-          "libopencv-objdetect406t64",
-          "libopencv-dnn406t64",
-          "libopencv-calib3d406t64",
-          "libopencv-features2d406t64",
-          "libopencv-flann406t64",
-          "libgstreamer1.0-0",
-          "libgstreamer-plugins-base1.0-0"
-        ]
-      }
-    }
+    "externalBin": []
   }
 }

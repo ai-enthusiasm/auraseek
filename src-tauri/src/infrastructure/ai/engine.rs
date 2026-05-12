@@ -6,7 +6,7 @@ use super::vision::{
     FaceModel, FaceGroup,
     FaceDb, cosine_similarity,
     YoloModel, YoloProcessor,
-    letterbox_640, preprocess_aura,
+    letterbox_640_from_image, preprocess_aura_from_image,
     DetectionRecord,
 };
 use crate::core::config::AppConfig;
@@ -102,13 +102,14 @@ impl AuraSeekEngine {
 
     pub fn new(config: EngineConfig) -> Result<Self> {
         let app_cfg = AppConfig::global();
+        let num_threads = app_cfg.num_threads;
 
-        log_info!("loading ai models");
-        let aura = AuraModel::new(&config.vision_path, &config.text_path)?;
+        log_info!("loading ai models | threads: {}", num_threads);
+        let aura = AuraModel::new(&config.vision_path, &config.text_path, num_threads)?;
         let text_proc = TextProcessor::new(&config.vocab_path, &config.bpe_path)?;
-        let yolo = YoloModel::new(&config.yolo_path)?;
+        let yolo = YoloModel::new(&config.yolo_path, num_threads)?;
         
-        let mut face = match FaceModel::new(&config.yunet_path, &config.sface_path) {
+        let mut face = match FaceModel::new(&config.yunet_path, &config.sface_path, num_threads) {
             Ok(m) => Some(m),
             Err(e) => {
                 log_warn!("face model failed to load: {}", e);
@@ -136,50 +137,40 @@ impl AuraSeekEngine {
         })
     }
 
-    /// Run AI pipeline on a single image and return structured output (no disk I/O).
+    /// Run AI pipeline on a single image and return structured output (no disk I/O redundancy).
     pub fn process_image(&mut self, img_path: &str) -> Result<EngineOutput> {
+        // Optimization: Read once from disk, decode once into 'image' crate, 
+        // then use bytes directly for OpenCV to avoid 3 separate disk reads.
+        let bytes = std::fs::read(img_path)?;
+        let img = image::load_from_memory(&bytes)?;
+
         // 1. Vision embedding
-        let vision_emb = self.aura.encode_image(preprocess_aura(img_path)?, 256, 256)
+        let vision_emb = self.aura.encode_image(preprocess_aura_from_image(&img), 256, 256)
             .unwrap_or_default();
 
         // 2. YOLO detection + segmentation
-        let lb = letterbox_640(img_path)?;
+        let lb = letterbox_640_from_image(&img);
         let raw = self.yolo.detect(lb.blob.clone())?;
         let objects = YoloProcessor::postprocess(&raw, &lb, self.yolo_confidence, self.yolo_iou);
 
-        // 3. Face detection — prefer imread path (same behavior as debug pipeline),
-        // then fallback to explicit imdecode for robustness.
+        // 3. Face detection
         let mut faces = vec![];
         if let Some(ref mut fm) = self.face {
             fm.set_score_threshold(self.face_detection_threshold);
-            match fm.detect_from_path(img_path, &self.face_db, self.face_identity_threshold) {
-                Ok(detected) => faces = detected,
-                Err(path_err) => {
-                    log_warn!(
-                        "face detect_from_path failed: {} | file={}",
-                        path_err,
-                        img_path
-                    );
-                    match std::fs::read(img_path) {
-                        Ok(bytes) => {
-                            let buf = opencv::core::Vector::<u8>::from_iter(bytes);
-                            match imdecode(&buf, IMREAD_COLOR | IMREAD_IGNORE_ORIENTATION) {
-                                Ok(frame) if !frame.empty() => {
-                                    match fm.detect_from_mat(&frame, &self.face_db, self.face_identity_threshold) {
-                                        Ok(detected) => faces = detected,
-                                        Err(e) => log_warn!(
-                                            "face detect_from_mat failed: {} | file={}",
-                                            e,
-                                            img_path
-                                        ),
-                                    }
-                                }
-                                Ok(_) => log_warn!("face detect: decoded empty Mat | file={}", img_path),
-                                Err(e) => log_warn!("face detect: imdecode failed: {} | file={}", e, img_path),
-                            }
-                        }
-                        Err(e) => log_warn!("face detect: read file failed: {} | file={}", e, img_path),
+            
+            // Reuse pre-read bytes to build an OpenCV Mat without disk I/O
+            let buf = opencv::core::Vector::<u8>::from_iter(bytes);
+            match imdecode(&buf, IMREAD_COLOR | IMREAD_IGNORE_ORIENTATION) {
+                Ok(frame) if !frame.empty() => {
+                    match fm.detect_from_mat(&frame, &self.face_db, self.face_identity_threshold) {
+                        Ok(detected) => faces = detected,
+                        Err(e) => log_warn!("face detect_from_mat failed: {} | file={}", e, img_path),
                     }
+                }
+                _ => {
+                    // Final fallback to path if imdecode fails for some reason
+                    let _ = fm.detect_from_path(img_path, &self.face_db, self.face_identity_threshold)
+                        .map(|detected| faces = detected);
                 }
             }
 

@@ -1,110 +1,153 @@
 use anyhow::Result;
-use crate::infrastructure::database::surreal::SurrealDb;
-use crate::infrastructure::database::models::MediaRow;
+use rusqlite::params;
+use crate::infrastructure::database::SqliteDb;
 use crate::core::models::TimelineGroup;
-use surrealdb::types::SurrealValue;
-use super::DbOperations;
+use super::{DbOperations, read_media_rows_from_query};
 
 impl DbOperations {
-    pub async fn move_to_trash(db: &SurrealDb, source_dir: &str, media_id: &str) -> Result<()> {
-        let mut res = db.db.query(format!("SELECT file.name AS name FROM {}", media_id)).await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct NameRow { name: String }
-        let row: Option<NameRow> = res.take(0)?;
-        if let Some(r) = row {
-            let src_path = std::path::Path::new(source_dir).join(&r.name);
+    pub fn move_to_trash(db: &SqliteDb, source_dir: &str, media_id: &str) -> Result<()> {
+        let conn = db.conn();
+        use rusqlite::OptionalExtension;
+
+        let name: Option<String> = conn.query_row(
+            "SELECT file_name FROM media WHERE id = ?1",
+            params![media_id],
+            |r| r.get(0),
+        ).optional()?;
+
+        if let Some(ref name) = name {
+            let src_path = std::path::Path::new(source_dir).join(name);
             let trash_dir = std::path::Path::new(source_dir).join(".trash");
             if !trash_dir.exists() { let _ = std::fs::create_dir_all(&trash_dir); }
-            let dst_path = trash_dir.join(&r.name);
+            let dst_path = trash_dir.join(name);
             if src_path.exists() { let _ = std::fs::rename(&src_path, &dst_path); }
         }
-        let query = format!("UPDATE {} SET deleted_at = time::now()", media_id);
-        db.db.query(&query).await?.check().map_err(|e| anyhow::anyhow!("move_to_trash failed: {}", e))?;
+
+        conn.execute(
+            "UPDATE media SET deleted_at = datetime('now') WHERE id = ?1",
+            params![media_id],
+        )?;
         Ok(())
     }
 
-    pub async fn restore_from_trash(db: &SurrealDb, source_dir: &str, media_id: &str) -> Result<()> {
-        let mut res = db.db.query(format!("SELECT file.name AS name FROM {}", media_id)).await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct NameRow { name: String }
-        let row: Option<NameRow> = res.take(0)?;
-        if let Some(r) = row {
-            let trash_path = std::path::Path::new(source_dir).join(".trash").join(&r.name);
-            let dst_path = std::path::Path::new(source_dir).join(&r.name);
+    pub fn restore_from_trash(db: &SqliteDb, source_dir: &str, media_id: &str) -> Result<()> {
+        let conn = db.conn();
+        use rusqlite::OptionalExtension;
+
+        let name: Option<String> = conn.query_row(
+            "SELECT file_name FROM media WHERE id = ?1",
+            params![media_id],
+            |r| r.get(0),
+        ).optional()?;
+
+        if let Some(ref name) = name {
+            let trash_path = std::path::Path::new(source_dir).join(".trash").join(name);
+            let dst_path = std::path::Path::new(source_dir).join(name);
             if trash_path.exists() { let _ = std::fs::rename(&trash_path, &dst_path); }
         }
-        let query = format!("UPDATE {} SET deleted_at = NONE", media_id);
-        db.db.query(&query).await?.check().map_err(|e| anyhow::anyhow!("restore_from_trash failed: {}", e))?;
+
+        conn.execute(
+            "UPDATE media SET deleted_at = NULL WHERE id = ?1",
+            params![media_id],
+        )?;
         Ok(())
     }
 
-    pub async fn get_trash(db: &SurrealDb, source_dir: &str) -> Result<Vec<TimelineGroup>> {
-        let mut res = db.db.query(
-            "SELECT * FROM media WHERE type::is_none(deleted_at) = false ORDER BY deleted_at ASC"
-        ).await?;
-        let rows: Vec<MediaRow> = res.take(0)?;
+    pub fn get_trash(db: &SqliteDb, source_dir: &str) -> Result<Vec<TimelineGroup>> {
+        let conn = db.conn();
+        let rows = read_media_rows_from_query(
+            &conn,
+            "SELECT * FROM media WHERE deleted_at IS NOT NULL ORDER BY deleted_at ASC",
+            &[],
+        )?;
         Self::group_rows_into_timeline(rows, source_dir)
     }
 
-    pub async fn empty_trash(db: &SurrealDb, source_dir: &str) -> Result<()> {
-        let mut res = db.db.query("SELECT file.name AS name FROM media WHERE type::is_none(deleted_at) = false").await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct NameRow { name: Option<String> }
-        let rows: Vec<NameRow> = res.take(0)?;
-        for r in rows.into_iter().filter_map(|r| r.name) {
-            let path = std::path::Path::new(source_dir).join(".trash").join(&r);
+    pub fn empty_trash(db: &SqliteDb, source_dir: &str) -> Result<()> {
+        let conn = db.conn();
+
+        let mut stmt = conn.prepare(
+            "SELECT file_name FROM media WHERE deleted_at IS NOT NULL"
+        )?;
+        let names: Vec<String> = stmt.query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for name in names {
+            let path = std::path::Path::new(source_dir).join(".trash").join(&name);
             if path.exists() { let _ = std::fs::remove_file(&path); }
         }
-        db.db.query("DELETE media WHERE type::is_none(deleted_at) = false").await?.check()?;
+
+        conn.execute("DELETE FROM media WHERE deleted_at IS NOT NULL", [])?;
         Ok(())
     }
 
-    pub async fn auto_purge_trash(db: &SurrealDb, source_dir: &str) -> Result<()> {
-        let mut res = db.db.query("SELECT file.name AS name FROM media WHERE type::is_none(deleted_at) = false AND deleted_at < time::now() - 30d").await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct NameRow { name: Option<String> }
-        let rows: Vec<NameRow> = res.take(0)?;
-        for r in rows.into_iter().filter_map(|r| r.name) {
-            let path = std::path::Path::new(source_dir).join(".trash").join(&r);
+    pub fn auto_purge_trash(db: &SqliteDb, source_dir: &str) -> Result<()> {
+        let conn = db.conn();
+
+        let mut stmt = conn.prepare(
+            "SELECT file_name FROM media WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-30 days')"
+        )?;
+        let names: Vec<String> = stmt.query_map([], |r| r.get(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        for name in names {
+            let path = std::path::Path::new(source_dir).join(".trash").join(&name);
             if path.exists() { let _ = std::fs::remove_file(&path); }
         }
-        db.db.query("DELETE media WHERE type::is_none(deleted_at) = false AND deleted_at < time::now() - 30d").await?.check()?;
+
+        conn.execute(
+            "DELETE FROM media WHERE deleted_at IS NOT NULL AND deleted_at < datetime('now', '-30 days')",
+            [],
+        )?;
         Ok(())
     }
 
-    pub async fn hard_delete_trash_item(db: &SurrealDb, source_dir: &str, media_id: &str) -> Result<()> {
-        let query = format!("SELECT file.name AS name FROM media WHERE id = {} AND type::is_none(deleted_at) = false", media_id);
-        let mut res = db.db.query(&query).await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct NameRow { name: Option<String> }
-        let rows: Vec<NameRow> = res.take(0)?;
-        if let Some(r) = rows.into_iter().next() {
-            if let Some(name) = r.name {
-                let path = std::path::Path::new(source_dir).join(".trash").join(&name);
-                if path.exists() { let _ = std::fs::remove_file(&path); }
-            }
+    pub fn hard_delete_trash_item(db: &SqliteDb, source_dir: &str, media_id: &str) -> Result<()> {
+        let conn = db.conn();
+        use rusqlite::OptionalExtension;
+
+        let name: Option<String> = conn.query_row(
+            "SELECT file_name FROM media WHERE id = ?1 AND deleted_at IS NOT NULL",
+            params![media_id],
+            |r| r.get(0),
+        ).optional()?;
+
+        if let Some(ref name) = name {
+            let path = std::path::Path::new(source_dir).join(".trash").join(name);
+            if path.exists() { let _ = std::fs::remove_file(&path); }
         }
-        db.db.query(format!("DELETE media WHERE id = {}", media_id)).await?.check()?;
+
+        conn.execute("DELETE FROM media WHERE id = ?1", params![media_id])?;
         Ok(())
     }
 
-    pub async fn hide_photo(db: &SurrealDb, media_id: &str) -> Result<()> {
-        db.db.query(&format!("UPDATE {} SET is_hidden = true", media_id)).await?.check()
-            .map_err(|e| anyhow::anyhow!("hide_photo failed: {}", e))?;
+    pub fn hide_photo(db: &SqliteDb, media_id: &str) -> Result<()> {
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE media SET is_hidden = 1 WHERE id = ?1",
+            params![media_id],
+        )?;
         Ok(())
     }
 
-    pub async fn unhide_photo(db: &SurrealDb, media_id: &str) -> Result<()> {
-        db.db.query(&format!("UPDATE {} SET is_hidden = false", media_id)).await?.check()
-            .map_err(|e| anyhow::anyhow!("unhide_photo failed: {}", e))?;
+    pub fn unhide_photo(db: &SqliteDb, media_id: &str) -> Result<()> {
+        let conn = db.conn();
+        conn.execute(
+            "UPDATE media SET is_hidden = 0 WHERE id = ?1",
+            params![media_id],
+        )?;
         Ok(())
     }
 
-    pub async fn get_hidden_photos(db: &SurrealDb, source_dir: &str) -> Result<Vec<TimelineGroup>> {
-        let mut res = db.db.query(
-            "SELECT * FROM media WHERE is_hidden = true AND deleted_at = NONE ORDER BY metadata.created_at DESC"
-        ).await?;
-        let rows: Vec<MediaRow> = res.take(0)?;
+    pub fn get_hidden_photos(db: &SqliteDb, source_dir: &str) -> Result<Vec<TimelineGroup>> {
+        let conn = db.conn();
+        let rows = read_media_rows_from_query(
+            &conn,
+            "SELECT * FROM media WHERE is_hidden = 1 AND deleted_at IS NULL ORDER BY meta_created_at DESC",
+            &[],
+        )?;
         Self::group_rows_into_timeline(rows, source_dir)
     }
 }

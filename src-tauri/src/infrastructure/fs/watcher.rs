@@ -6,9 +6,8 @@ use std::time::Duration;
 use notify::{RecommendedWatcher, RecursiveMode, Watcher, Config, EventKind};
 use tokio::sync::{Mutex, mpsc};
 
-use crate::infrastructure::database::SurrealDb;
+use crate::infrastructure::database::SqliteDb;
 use crate::infrastructure::ai::AuraSeekEngine;
-use crate::infrastructure::ingest::image_processor;
 use crate::app::ingest::ingest_pipeline;
 use crate::core::models::SyncStatus;
 
@@ -44,7 +43,8 @@ pub struct FileWatcher;
 impl FileWatcher {
     pub fn start(
         source_dir: String,
-        db: Arc<Mutex<Option<SurrealDb>>>,
+        sqlite: Arc<std::sync::Mutex<Option<SqliteDb>>>,
+        qdrant: Arc<Mutex<Option<qdrant_client::Qdrant>>>,
         engine: Arc<Mutex<Option<AuraSeekEngine>>>,
         sync_status: Arc<Mutex<SyncStatus>>,
         thumb_cache_dir: Option<PathBuf>,
@@ -129,7 +129,8 @@ impl FileWatcher {
                         match ingest_pipeline::ingest_files(
                             files.clone(),
                             dir_for_task.clone(),
-                            db.clone(),
+                            sqlite.clone(),
+                            qdrant.clone(),
                             engine.clone(),
                             thumb_cache,
                         ).await {

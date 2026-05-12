@@ -36,11 +36,13 @@ export function FullScreenVideoViewer({
     const [streamUrl, setStreamUrl] = useState<string | null>(null);
     const [isHardDeleteOpen, setIsHardDeleteOpen] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null);
 
     useEffect(() => {
         setIsFavorite(photo.favorite || false);
         setVideoError(false);
         setStreamUrl(null);
+        setVideoAspectRatio(null);
 
         let active = true;
 
@@ -64,6 +66,22 @@ export function FullScreenVideoViewer({
             active = false;
         };
     }, [photo.id, photo.filePath, photo.favorite]);
+
+    useEffect(() => {
+        if (!photo.thumbnailUrl) return;
+
+        let active = true;
+        const img = new Image();
+        img.onload = () => {
+            if (!active || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+            setVideoAspectRatio(img.naturalWidth / img.naturalHeight);
+        };
+        img.src = photo.thumbnailUrl;
+
+        return () => {
+            active = false;
+        };
+    }, [photo.thumbnailUrl]);
 
     const handleFavorite = async () => {
         try {
@@ -158,7 +176,7 @@ export function FullScreenVideoViewer({
 
     return createPortal(
         <div className="fixed inset-0 z-[9999] flex bg-background w-full h-full text-foreground">
-            <div className="relative flex-1 flex flex-col overflow-hidden bg-black transition-all">
+            <div className="relative min-w-0 flex-1 flex flex-col overflow-hidden bg-black transition-all">
                 <FullScreenTopBar
                     hasOverlays={false}
                     showBbox={false}
@@ -185,7 +203,7 @@ export function FullScreenVideoViewer({
                     isVideo
                 />
 
-                <div className="flex-1 flex items-center justify-center p-4 bg-black">
+                <div className="min-h-0 flex-1 flex items-center justify-center p-4 bg-black">
                     {videoError ? (
                         <div className="flex flex-col items-center justify-center gap-4 text-center max-w-md">
                             <img
@@ -212,20 +230,36 @@ export function FullScreenVideoViewer({
                             <span className="text-slate-400 animate-pulse text-sm font-medium">Đang kết nối luồng phát...</span>
                         </div>
                     ) : (
-                        <video
-                            src={streamUrl}
-                            poster={photo.thumbnailUrl}
-                            controls
-                            autoPlay
-                            className="max-w-full max-h-full rounded-xl bg-black shadow-2xl"
-                            onError={(e) => {
-                                const err = (e.target as HTMLVideoElement).error;
-                                console.error("Video playback error:", err);
-                                setVideoError(true);
+                        <div
+                            className="flex max-h-full max-w-full items-center justify-center overflow-hidden rounded-xl bg-black shadow-2xl"
+                            style={{
+                                aspectRatio: videoAspectRatio ?? undefined,
+                                width: videoAspectRatio && videoAspectRatio < 1 ? "auto" : "100%",
+                                height: videoAspectRatio && videoAspectRatio < 1 ? "100%" : "auto",
                             }}
                         >
-                            Trình duyệt không hỗ trợ định dạng này.
-                        </video>
+                            <video
+                                src={streamUrl}
+                                poster={photo.thumbnailUrl}
+                                controls
+                                autoPlay
+                                className="h-full w-full bg-black object-contain"
+                                onLoadedMetadata={(e) => {
+                                    if (videoAspectRatio) return;
+                                    const video = e.currentTarget;
+                                    if (video.videoWidth > 0 && video.videoHeight > 0) {
+                                        setVideoAspectRatio(video.videoWidth / video.videoHeight);
+                                    }
+                                }}
+                                onError={(e) => {
+                                    const err = (e.target as HTMLVideoElement).error;
+                                    console.error("Video playback error:", err);
+                                    setVideoError(true);
+                                }}
+                            >
+                                Trình duyệt không hỗ trợ định dạng này.
+                            </video>
+                        </div>
                     )}
                 </div>
             </div>

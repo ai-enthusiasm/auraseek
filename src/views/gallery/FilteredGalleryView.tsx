@@ -86,6 +86,7 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
                     return photo.faceIds?.includes(filterPayload || "") || photo.faces?.includes(filterPayload || "");
                 case "album":
                     if (photo.type === "video") return false;
+                    if (filterPayload === "fav") return !!photo.favorite;
                     if (filterPayload === "scr") {
                         const path = (photo.filePath || "").toLowerCase();
                         const name = path.split(/[/\\]/).pop() || "";

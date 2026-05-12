@@ -2,13 +2,13 @@ use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
 use tauri::Emitter;
 
-use crate::infrastructure::database::{SurrealDb, DbOperations};
+use crate::infrastructure::database::{SqliteDb, DbOperations};
 use crate::infrastructure::ai::AuraSeekEngine;
 use crate::infrastructure::ingest::image_processor::{
-    self, collect_files, scan_single_file, process_image_file,
+    collect_files, scan_single_file, process_image_file,
     IMAGE_EXTENSIONS, VIDEO_EXTENSIONS,
 };
 use crate::infrastructure::ingest::video_processor;
@@ -16,7 +16,8 @@ use crate::core::models::{IngestSummary, IngestProgress};
 
 pub async fn ingest_folder(
     source_dir: String,
-    db: Arc<Mutex<Option<SurrealDb>>>,
+    sqlite: Arc<std::sync::Mutex<Option<SqliteDb>>>,
+    qdrant: Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: Arc<Mutex<Option<AuraSeekEngine>>>,
     app: Option<tauri::AppHandle>,
     thumb_cache_dir: Option<PathBuf>,
@@ -42,9 +43,9 @@ pub async fn ingest_folder(
     }
 
     {
-        let db_guard = db.lock().await;
-        if let Some(ref sdb) = *db_guard {
-            if let Err(e) = DbOperations::set_source_dir(sdb, &source_dir).await {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Err(e) = DbOperations::set_source_dir(db, &source_dir) {
                 crate::log_warn!("⚠️ Failed to persist source_dir to config: {}", e);
             } else {
                 crate::log_info!("📝 source_dir saved to config_auraseek: {}", source_dir);
@@ -66,72 +67,18 @@ pub async fn ingest_folder(
         errors: 0,
     };
 
-    let (tx, mut rx) = mpsc::channel::<(PathBuf, String, bool)>(64);
-    let db_scan = db.clone();
-    let source_dir_clone = source_dir.clone();
-    let abort_scan = abort_sync.clone();
-
-    let scan_task = tokio::spawn(async move {
-        let mut newly_added = 0usize;
-        let mut skipped = 0usize;
-        let mut errors = 0usize;
-
-        for path in image_files {
-            if abort_scan.load(std::sync::atomic::Ordering::SeqCst) {
-                crate::log_info!("🛑 Ingest scan aborted for images");
-                break;
-            }
-            match scan_single_file(&path, &db_scan, &source_dir_clone, "image").await {
-                Ok(Some(media_id)) => {
-                    newly_added += 1;
-                    let _ = tx.send((path, media_id, false)).await;
-                }
-                Ok(None) => { skipped += 1; }
-                Err(e) => {
-                    crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
-                    errors += 1;
-                }
-            }
-        }
-
-        for path in video_files {
-            if abort_scan.load(std::sync::atomic::Ordering::SeqCst) {
-                crate::log_info!("🛑 Ingest scan aborted for videos");
-                break;
-            }
-            match scan_single_file(&path, &db_scan, &source_dir_clone, "video").await {
-                Ok(Some(media_id)) => {
-                    newly_added += 1;
-                    let _ = tx.send((path, media_id, true)).await;
-                }
-                Ok(None) => { skipped += 1; }
-                Err(e) => {
-                    crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
-                    errors += 1;
-                }
-            }
-        }
-
-        (newly_added, skipped, errors)
-    });
-
-    let mut to_process = Vec::new();
-    while let Some(item) = rx.recv().await {
-        to_process.push(item);
-    }
-
-    let (newly_added, skipped, errors) = scan_task.await?;
-    summary.newly_added = newly_added;
-    summary.skipped_dup = skipped;
-    summary.errors = errors;
-
-    let total_to_process = to_process.len();
+    let total_to_process = total;
     let app_handle = app.clone();
 
     let mut ai_processed = 0usize;
-    for (path, media_id, is_video) in to_process {
+    let files = image_files
+        .into_iter()
+        .map(|path| (path, false, "image"))
+        .chain(video_files.into_iter().map(|path| (path, true, "video")));
+
+    for (path, is_video, media_type) in files {
         if abort_sync.load(std::sync::atomic::Ordering::SeqCst) {
-            crate::log_info!("🛑 AI processing loop aborted");
+            crate::log_info!("🛑 Ingest loop aborted");
             break;
         }
 
@@ -141,17 +88,33 @@ pub async fn ingest_folder(
             .unwrap_or("")
             .to_string();
 
+        let media_id = match scan_single_file(&path, &sqlite, &source_dir, media_type).await {
+            Ok(Some(media_id)) => {
+                summary.newly_added += 1;
+                media_id
+            }
+            Ok(None) => {
+                summary.skipped_dup += 1;
+                continue;
+            }
+            Err(e) => {
+                crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
+                summary.errors += 1;
+                continue;
+            }
+        };
+
         crate::log_info!("🤖 [AI {}/{}] Processing: {}", ai_processed + 1, total_to_process, file_name_only);
 
         if is_video {
             let cache_ref = thumb_cache_dir.as_deref();
-            match video_processor::process_video(&path_str, &media_id, &db, &engine, cache_ref).await {
+            match video_processor::process_video(&path_str, &media_id, &sqlite, &qdrant, &engine, cache_ref).await {
                 Ok(Some(thumb)) => crate::log_info!("🎥 Video done, thumbnail: {}", thumb),
                 Ok(None)        => crate::log_info!("🎥 Video done (no thumbnail)"),
                 Err(e)          => crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name_only, e),
             }
         } else {
-            process_image_file(&path_str, &media_id, &file_name_only, &db, &engine).await;
+            process_image_file(&path_str, &media_id, &file_name_only, &sqlite, &qdrant, &engine).await;
         }
 
         ai_processed += 1;
@@ -171,7 +134,7 @@ pub async fn ingest_folder(
     }
 
     crate::log_info!("✅ Ingest complete: {} new, {} skipped, {} errors, {} AI processed",
-        newly_added, skipped, errors, ai_processed);
+        summary.newly_added, summary.skipped_dup, summary.errors, ai_processed);
 
     Ok(summary)
 }
@@ -179,7 +142,8 @@ pub async fn ingest_folder(
 pub async fn ingest_files(
     file_paths: Vec<String>,
     dest_dir: String,
-    db: Arc<Mutex<Option<SurrealDb>>>,
+    sqlite: Arc<std::sync::Mutex<Option<SqliteDb>>>,
+    qdrant: Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: Arc<Mutex<Option<AuraSeekEngine>>>,
     thumb_cache_dir: Option<PathBuf>,
 ) -> Result<IngestSummary> {
@@ -221,7 +185,7 @@ pub async fn ingest_files(
             }
         }
 
-        match scan_single_file(&dest, &db, &dest_dir, media_type).await {
+        match scan_single_file(&dest, &sqlite, &dest_dir, media_type).await {
             Ok(Some(media_id)) => {
                 crate::log_info!("📎 Copied+ingested: {} ({}) as {}", file_name, media_id, media_type);
                 summary.newly_added += 1;
@@ -230,11 +194,11 @@ pub async fn ingest_files(
 
                 if is_video {
                     let cache_ref = thumb_cache_dir.as_deref();
-                    if let Err(e) = video_processor::process_video(&dest_str, &media_id, &db, &engine, cache_ref).await {
+                    if let Err(e) = video_processor::process_video(&dest_str, &media_id, &sqlite, &qdrant, &engine, cache_ref).await {
                         crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name, e);
                     }
                 } else {
-                    process_image_file(&dest_str, &media_id, &file_name, &db, &engine).await;
+                    process_image_file(&dest_str, &media_id, &file_name, &sqlite, &qdrant, &engine).await;
                 }
             }
             Ok(None) => { summary.skipped_dup += 1; }

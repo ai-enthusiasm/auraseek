@@ -15,7 +15,13 @@ pub struct AppConfig {
     pub data_dir: PathBuf,
     pub log_path: PathBuf,
     pub model_dir: PathBuf,
-    pub surreal_bin: Option<PathBuf>,
+
+    pub sqlite_path: PathBuf,
+    pub qdrant_port: u16,
+    pub qdrant_http_port: u16,
+    pub qdrant_dashboard_enabled: bool,
+    pub qdrant_storage_dir: PathBuf,
+    pub qdrant_collection: String,
 
     pub face_detection_threshold: f32,
     pub face_identity_threshold: f32,
@@ -38,9 +44,14 @@ impl Default for AppConfig {
 
         Self {
             model_dir: data_dir.clone(),
+            sqlite_path: data_dir.join("auraseek.sqlite3"),
+            qdrant_port: 6334,
+            qdrant_http_port: 6333,
+            qdrant_dashboard_enabled: false,
+            qdrant_storage_dir: data_dir.join("qdrant_storage"),
+            qdrant_collection: "media_embeddings".to_string(),
             data_dir,
             log_path,
-            surreal_bin: None,
 
             face_detection_threshold: 0.93,
             face_identity_threshold: 0.33,
@@ -48,10 +59,10 @@ impl Default for AppConfig {
             yolo_iou: 0.45,
             search_threshold: 0.256,
             search_limit: 10000,
-            max_batch_size: 32,
+            max_batch_size: 1,
 
             device: DevicePreference::Auto,
-            num_threads: num_cpus::get().max(1),
+            num_threads: 1,
 
             debug: false,
         }
@@ -138,8 +149,23 @@ impl AppConfig {
             data_dir.clone(),
             "AURASEEK_MODEL_DIR",
         );
-        let surreal_bin = env_path("AURASEEK_SURREAL_BIN")
-            .or(defaults.surreal_bin);
+
+        let sqlite_path = env_path("AURASEEK_SQLITE_PATH")
+            .unwrap_or_else(|| data_dir.join("auraseek.sqlite3"));
+        let qdrant_port = env_or("AURASEEK_QDRANT_PORT", defaults.qdrant_port);
+        let qdrant_http_port = env_or("AURASEEK_QDRANT_HTTP_PORT", defaults.qdrant_http_port);
+        let qdrant_dashboard_enabled = env_or(
+            "AURASEEK_QDRANT_DASHBOARD_ENABLED",
+            defaults.qdrant_dashboard_enabled,
+        );
+        let qdrant_storage_dir = ensure_dir_or_fallback(
+            env_path("AURASEEK_QDRANT_STORAGE_DIR")
+                .unwrap_or_else(|| data_dir.join("qdrant_storage")),
+            data_dir.join("qdrant_storage"),
+            "AURASEEK_QDRANT_STORAGE_DIR",
+        );
+        let qdrant_collection = std::env::var("AURASEEK_QDRANT_COLLECTION")
+            .unwrap_or_else(|_| defaults.qdrant_collection.clone());
 
         let face_detection_threshold = clamp_f32(
             env_or("AURASEEK_FACE_DETECTION_THRESHOLD", defaults.face_detection_threshold),
@@ -186,7 +212,12 @@ impl AppConfig {
             data_dir,
             log_path,
             model_dir,
-            surreal_bin,
+            sqlite_path,
+            qdrant_port,
+            qdrant_http_port,
+            qdrant_dashboard_enabled,
+            qdrant_storage_dir,
+            qdrant_collection,
             face_detection_threshold,
             face_identity_threshold,
             yolo_confidence,
@@ -212,6 +243,11 @@ impl AppConfig {
         crate::log_info!("⚙️  Configuration Summary:");
         crate::log_info!("   Data Dir:      {}", self.data_dir.display());
         crate::log_info!("   Model Dir:     {}", self.model_dir.display());
+        crate::log_info!("   SQLite:        {}", self.sqlite_path.display());
+        crate::log_info!("   Qdrant gRPC:   {}", self.qdrant_port);
+        crate::log_info!("   Qdrant HTTP:   {}", self.qdrant_http_port);
+        crate::log_info!("   Qdrant UI:     {}", if self.qdrant_dashboard_enabled { "enabled" } else { "disabled" });
+        crate::log_info!("   Qdrant store:  {}", self.qdrant_storage_dir.display());
         crate::log_info!("   Device:        {:?}", self.device);
         crate::log_info!("   Threads:       {}", self.num_threads);
         crate::log_info!("   Face (Det/Id): {:.4} / {:.4}", self.face_detection_threshold, self.face_identity_threshold);

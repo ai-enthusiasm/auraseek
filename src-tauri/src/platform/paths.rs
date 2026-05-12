@@ -46,11 +46,6 @@ pub fn default_log_path() -> String {
     }
 }
 
-/// SurrealDB binary file name for the current platform.
-pub fn surreal_binary_name() -> &'static str {
-    if cfg!(windows) { "surreal.exe" } else { "surreal" }
-}
-
 /// Command used to locate executables on the system PATH.
 pub fn which_command() -> &'static str {
     if cfg!(windows) { "where" } else { "which" }

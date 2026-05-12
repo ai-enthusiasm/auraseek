@@ -1,8 +1,8 @@
-pub mod surreal;
+pub mod sqlite;
+pub mod qdrant;
 pub mod models;
 pub mod operations;
 
-pub mod surreal_sidecar;
-
-pub use surreal::SurrealDb;
+pub use sqlite::SqliteDb;
+pub use qdrant::QdrantService;
 pub use operations::DbOperations;

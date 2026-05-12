@@ -4,10 +4,11 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use sha2::{Sha256, Digest};
 
-use crate::infrastructure::database::{SurrealDb, DbOperations};
-use crate::infrastructure::database::models::{MediaDoc, FileInfo, MediaMetadata, ObjectEntry, FaceEntry, Bbox, PersonDoc};
+use crate::infrastructure::database::{SqliteDb, DbOperations};
+use crate::infrastructure::database::models::{FileInfo, MediaMetadata, ObjectEntry, FaceEntry, Bbox, PersonDoc};
 use crate::infrastructure::ai::AuraSeekEngine;
 use crate::infrastructure::ai::engine::EngineOutput;
+use crate::infrastructure::ai::vision::coco_label_vi;
 
 pub const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "avif"];
 pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
@@ -31,7 +32,8 @@ pub async fn process_image_file(
     path_str: &str,
     media_id: &str,
     file_name_only: &str,
-    db: &Arc<Mutex<Option<SurrealDb>>>,
+    sqlite: &Arc<std::sync::Mutex<Option<SqliteDb>>>,
+    qdrant: &Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
 ) {
     let t0 = std::time::Instant::now();
@@ -50,28 +52,57 @@ pub async fn process_image_file(
     let faces = convert_faces(&output);
     let detected_faces = extract_person_data(&faces);
 
-    let db_guard = db.lock().await;
-    if let Some(ref sdb) = *db_guard {
-        if let Err(e) = DbOperations::update_media_ai(sdb, media_id, objects, faces, None).await {
-            crate::log_warn!("⚠️ update_media_ai failed for {}: {}", media_id, e);
-        }
-        if !output.vision_embedding.is_empty() {
-            if let Err(e) = DbOperations::insert_embedding(
-                sdb, media_id, "image", None, None, output.vision_embedding
-            ).await {
-                crate::log_warn!("⚠️ insert_embedding failed for {}: {}", media_id, e);
+    {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Err(e) = DbOperations::update_media_ai(db, media_id, objects, faces, None) {
+                crate::log_warn!("⚠️ update_media_ai failed for {}: {}", media_id, e);
+            }
+            for (fid, conf, bbox) in &detected_faces {
+                crate::log_info!("  👤 Upserting person face_id={} conf={:.3}", fid, conf);
+                if let Err(e) = DbOperations::upsert_person(db, PersonDoc {
+                    face_id: fid.clone(),
+                    name: None,
+                    thumbnail: Some(file_name_only.to_string()),
+                    conf: Some(*conf),
+                    face_bbox: Some(bbox.clone()),
+                }) {
+                    crate::log_warn!("⚠️ upsert_person failed for {}: {}", fid, e);
+                }
             }
         }
-        for (fid, conf, bbox) in &detected_faces {
-            crate::log_info!("  👤 Upserting person face_id={} conf={:.3}", fid, conf);
-            if let Err(e) = DbOperations::upsert_person(sdb, PersonDoc {
-                face_id: fid.clone(),
-                name: None,
-                thumbnail: Some(file_name_only.to_string()),
-                conf: Some(*conf),
-                face_bbox: Some(bbox.clone()),
-            }).await {
-                crate::log_warn!("⚠️ upsert_person failed for {}: {}", fid, e);
+    }
+
+    let mut embedding_ok = output.vision_embedding.is_empty();
+    if !output.vision_embedding.is_empty() {
+        let config = crate::core::config::AppConfig::global();
+        let collection = &config.qdrant_collection;
+        let qdrant_guard = qdrant.lock().await;
+        if let Some(ref client) = *qdrant_guard {
+            let mut deleted_old = true;
+            if let Err(e) = DbOperations::delete_embeddings_for_media(client, collection, media_id).await {
+                crate::log_warn!("⚠️ delete_embeddings_for_media failed for {}: {:#}", media_id, e);
+                deleted_old = false;
+            }
+            if deleted_old {
+                if let Err(e) = DbOperations::insert_embedding(
+                    client, collection, media_id, "image", None, None, output.vision_embedding
+                ).await {
+                    crate::log_warn!("⚠️ insert_embedding failed for {}: {:#}", media_id, e);
+                } else {
+                    embedding_ok = true;
+                }
+            }
+        } else {
+            crate::log_warn!("⚠️ Qdrant client unavailable; media {} will be reprocessed later", media_id);
+        }
+    }
+
+    if !embedding_ok {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Err(e) = DbOperations::set_media_processed(db, media_id, false) {
+                crate::log_warn!("⚠️ failed to mark media {} as unprocessed after embedding error: {}", media_id, e);
             }
         }
     }
@@ -79,7 +110,7 @@ pub async fn process_image_file(
 
 pub fn convert_objects(output: &EngineOutput) -> Vec<ObjectEntry> {
     output.objects.iter().map(|o| ObjectEntry {
-        class_name: o.class_name.clone(),
+        class_name: coco_label_vi(&o.class_name).to_string(),
         conf: o.conf,
         bbox: Bbox {
             x: o.bbox[0], y: o.bbox[1],
@@ -114,12 +145,10 @@ pub fn extract_person_data(faces: &[FaceEntry]) -> Vec<(String, f32, Bbox)> {
 
 pub async fn scan_single_file(
     path: &Path,
-    db: &Arc<Mutex<Option<SurrealDb>>>,
+    sqlite: &Arc<std::sync::Mutex<Option<SqliteDb>>>,
     _source_dir: &str,
     media_type: &str,
 ) -> Result<Option<String>> {
-    let sha256 = compute_sha256(path)?;
-
     let meta = std::fs::metadata(path)?;
     let size = meta.len();
     let name = path.file_name()
@@ -127,10 +156,32 @@ pub async fn scan_single_file(
         .unwrap_or("")
         .to_string();
 
+    let modified_at = file_modified_at(&meta);
+
     {
-        let db_guard = db.lock().await;
-        if let Some(ref sdb) = *db_guard {
-            if let Ok(Some((media_id, processed))) = DbOperations::check_exact_file(sdb, &name, &sha256).await {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Ok(Some((media_id, processed))) = DbOperations::check_file_by_metadata(
+                db,
+                &name,
+                size,
+                modified_at.as_deref(),
+            ) {
+                if processed {
+                    return Ok(None);
+                } else {
+                    return Ok(Some(media_id));
+                }
+            }
+        }
+    }
+
+    let sha256 = compute_sha256(path)?;
+
+    {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Ok(Some((media_id, processed))) = DbOperations::check_exact_file(db, &name, &sha256) {
                 if processed {
                     return Ok(None);
                 } else {
@@ -148,30 +199,24 @@ pub async fn scan_single_file(
         (None, None)
     };
 
-    let modified_at = meta.modified().ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .and_then(|d| surrealdb::types::Datetime::from_timestamp(d.as_secs() as i64, 0));
-
-    let doc = MediaDoc {
-        media_type: media_type.to_string(),
-        file: FileInfo { name, size, sha256, phash: None },
-        metadata: MediaMetadata {
-            width, height,
-            duration: None, fps: None,
-            created_at: modified_at.clone(),
-            modified_at,
-        },
-        objects: vec![],
-        faces: vec![],
-        thumbnail: None,
-        processed: false,
-        deleted_at: None,
-        is_hidden: false,
+    let file_info = FileInfo { name, size, sha256, phash: None };
+    let metadata = MediaMetadata {
+        width, height,
+        duration: None, fps: None,
+        created_at: modified_at.clone(),
+        modified_at,
     };
 
-    let db_guard = db.lock().await;
-    let sdb = db_guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not connected"))?;
-    let media_id = DbOperations::insert_media(sdb, doc).await?;
+    let guard = sqlite.lock().unwrap();
+    let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not connected"))?;
+
+    if let Some(media_id) = DbOperations::find_media_by_name(db, &file_info.name)? {
+        DbOperations::reset_media_file(db, &media_id, media_type, &file_info, &metadata)?;
+        return Ok(Some(media_id));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let media_id = DbOperations::insert_media(db, &id, media_type, &file_info, &metadata)?;
     Ok(Some(media_id))
 }
 
@@ -209,6 +254,16 @@ fn compute_sha256(path: &Path) -> Result<String> {
     let data = std::fs::read(path)?;
     let hash = Sha256::digest(&data);
     Ok(hex::encode(hash))
+}
+
+fn file_modified_at(meta: &std::fs::Metadata) -> Option<String> {
+    meta.modified().ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| {
+            chrono::DateTime::from_timestamp(d.as_secs() as i64, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_default()
+        })
 }
 
 fn get_image_dimensions(path: &str) -> (Option<u32>, Option<u32>) {

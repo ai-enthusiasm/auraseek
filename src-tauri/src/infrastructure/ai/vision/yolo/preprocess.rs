@@ -18,6 +18,11 @@ pub struct LetterboxResult {
 /// letterbox resize image to 640x640 chw layout
 pub fn letterbox_640(path: &str) -> Result<LetterboxResult> {
     let img = ImageReader::open(path)?.decode()?;
+    Ok(letterbox_640_from_image(&img))
+}
+
+pub fn letterbox_640_from_image(img: &image::DynamicImage) -> LetterboxResult {
+    use image::GenericImageView;
     let (orig_w, orig_h): (u32, u32) = img.dimensions();
 
     let ratio    = 640.0f32 / orig_w.max(orig_h) as f32;
@@ -42,5 +47,5 @@ pub fn letterbox_640(path: &str) -> Result<LetterboxResult> {
         blob[idx + 2 * area] = pixel[2] as f32 / 255.0; // b
     }
 
-    Ok(LetterboxResult { blob, ratio, pad_left, pad_top, orig_size: (orig_h, orig_w) })
+    LetterboxResult { blob, ratio, pad_left, pad_top, orig_size: (orig_h, orig_w) }
 }

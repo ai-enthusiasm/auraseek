@@ -63,11 +63,11 @@ pub struct YoloModel {
 }
 
 impl YoloModel {
-    pub fn new(path: &str) -> Result<Self> {
+    pub fn new(path: &str, num_threads: usize) -> Result<Self> {
         let class_names = Self::load_class_names(path);
         log_info!("yolo: {} classes loaded", class_names.len());
         Ok(Self {
-            session: build_session(path)?,
+            session: build_session(path, num_threads)?,
             class_names,
         })
     }

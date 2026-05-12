@@ -1,8 +1,8 @@
 {
   "bundle": {
     "resources": [
-      "libs/windows/**/*"
+      "libs/macos/**/*"
     ],
-    "windows": {}
+    "macOS": {}
   }
 }

@@ -1,8 +1,8 @@
 use tauri::State;
 use crate::app::state::AppState;
-use crate::app::helpers::start_db_sidecar;
+use crate::app::helpers::start_qdrant_sidecar;
 use crate::infrastructure::ai::AuraSeekEngine;
-use crate::infrastructure::database::{SurrealDb, DbOperations};
+use crate::infrastructure::database::{SqliteDb, QdrantService, DbOperations};
 
 #[tauri::command]
 pub async fn cmd_check_models(state: State<'_, AppState>) -> Result<bool, String> {
@@ -53,44 +53,79 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
     }
 
     {
-        if state.surreal_addr.lock().unwrap().is_empty() {
-            let _ = start_db_sidecar(&app);
-        }
-        let addr = state.surreal_addr.lock().unwrap().clone();
-        let user = state.surreal_user.lock().unwrap().clone();
-        let pass = state.surreal_pass.lock().unwrap().clone();
-        let mut db_guard = state.db.lock().await;
-        if db_guard.is_none() {
-            match SurrealDb::connect(&addr, &user, &pass).await {
-                Ok(sdb) => {
-                    let sdb_clone = sdb.clone();
-                    let source_dir_clone = state.source_dir.lock().await.clone();
-                    tokio::spawn(async move {
-                        if let Err(e) = DbOperations::auto_purge_trash(&sdb_clone, &source_dir_clone).await {
-                            crate::log_warn!("Failed to auto-purge trash: {}", e);
-                        }
-                    });
-                    *db_guard = Some(sdb);
+        let mut guard = state.sqlite.lock().unwrap();
+        if guard.is_none() {
+            let config = crate::core::config::AppConfig::global();
+            match SqliteDb::open(&config.sqlite_path) {
+                Ok(db) => {
+                    crate::log_info!("✅ SQLite database opened: {}", config.sqlite_path.display());
+                    *guard = Some(db);
                 }
-                Err(e) => return Err(format!("SurrealDB connection failed: {}", e)),
+                Err(e) => return Err(format!("SQLite open failed: {}", e)),
             }
         }
     }
 
     {
-        let db_guard = state.db.lock().await;
-        if let Some(ref sdb) = *db_guard {
-            match DbOperations::get_source_dir(sdb).await {
-                Ok(Some(dir)) => { crate::log_info!("📂 source_dir loaded from config: {}", dir); *state.source_dir.lock().await = dir; }
-                Ok(None) => { crate::log_info!("📂 No source_dir configured yet (first run)"); }
-                Err(e) => { crate::log_warn!("⚠️ Failed to load source_dir: {}", e); }
+        if state.qdrant_child.lock().unwrap().is_none() {
+            start_qdrant_sidecar(&app).await?;
+        }
+        let mut guard = state.qdrant_client.lock().await;
+        if guard.is_none() {
+            let config = crate::core::config::AppConfig::global();
+            let runtime_port = state
+                .qdrant_runtime_grpc_port
+                .load(std::sync::atomic::Ordering::SeqCst);
+            let connect_port = if runtime_port == 0 {
+                config.qdrant_port
+            } else {
+                runtime_port
+            };
+            match QdrantService::connect_client(connect_port).await {
+                Ok(client) => {
+                    if let Err(e) = QdrantService::ensure_collection(&client, &config.qdrant_collection, 384).await {
+                        crate::log_warn!("⚠️ Failed to ensure Qdrant collection: {}", e);
+                    }
+                    crate::log_info!("✅ Qdrant client connected on port {}", connect_port);
+                    *guard = Some(client);
+                }
+                Err(e) => return Err(format!("Qdrant connect failed: {}", e)),
             }
         }
     }
 
+    {
+        let source_dir_clone = state.source_dir.lock().await.clone();
+        let guard = state.sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Err(e) = DbOperations::auto_purge_trash(db, &source_dir_clone) {
+                crate::log_warn!("Failed to auto-purge trash: {}", e);
+            }
+        }
+    }
+
+    {
+        let loaded_dir = {
+            let guard = state.sqlite.lock().unwrap();
+            if let Some(ref db) = *guard {
+                match DbOperations::get_source_dir(db) {
+                    Ok(Some(dir)) => { crate::log_info!("📂 source_dir loaded from config: {}", dir); Some(dir) }
+                    Ok(None) => { crate::log_info!("📂 No source_dir configured yet (first run)"); None }
+                    Err(e) => { crate::log_warn!("⚠️ Failed to load source_dir: {}", e); None }
+                }
+            } else { None }
+        };
+        if let Some(dir) = loaded_dir {
+            *state.source_dir.lock().await = dir;
+        }
+    }
+
     let count = {
-        let db_guard = state.db.lock().await;
-        if let Some(ref sdb) = *db_guard { DbOperations::embedding_count(sdb).await.unwrap_or(0) } else { 0 }
+        let guard = state.qdrant_client.lock().await;
+        let config = crate::core::config::AppConfig::global();
+        if let Some(ref client) = *guard {
+            DbOperations::embedding_count(client, &config.qdrant_collection).await.unwrap_or(0)
+        } else { 0 }
     };
 
     let source_dir = state.source_dir.lock().await.clone();

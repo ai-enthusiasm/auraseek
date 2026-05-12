@@ -9,16 +9,22 @@ async fn run_search(
     query: SearchQuery, text: Option<String>, image_path: Option<String>, state: &State<'_, AppState>,
 ) -> Result<Vec<SearchResult>, String> {
     let source_dir = state.source_dir.lock().await.clone();
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized. Call cmd_init first.")?;
+    let qdrant_guard = state.qdrant_client.lock().await;
+    let qdrant = qdrant_guard.as_ref().ok_or("Qdrant not initialized. Call cmd_init first.")?;
     let mut engine_guard = state.engine.lock().await;
     let engine = engine_guard.as_mut().ok_or("Engine not initialized. Call cmd_init first.")?;
 
-    let results = match SearchPipeline::run(&query, engine, db, &source_dir).await {
+    let results = match SearchPipeline::run(&query, engine, &state.sqlite, qdrant, &source_dir).await {
         Ok(r) => { crate::log_info!("🔍 [run_search] mode={:?} text={:?} image_path={:?} results={}", query.mode, text, image_path, r.len()); r }
         Err(e) => { crate::log_error!("❌ [run_search] failed mode={:?} text={:?} image_path={:?} error={}", query.mode, text, image_path, e); return Err(e.to_string()); }
     };
-    let _ = DbOperations::save_search_history(db, text, image_path, None).await;
+
+    {
+        let guard = state.sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            let _ = DbOperations::save_search_history(db, text, image_path, None);
+        }
+    }
     Ok(results)
 }
 
@@ -74,17 +80,17 @@ pub async fn cmd_search_filter_only(filters: Option<SearchQueryFilters>, state: 
 
 #[tauri::command]
 pub async fn cmd_get_search_history(limit: Option<usize>, state: State<'_, AppState>) -> Result<serde_json::Value, String> {
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    let history = DbOperations::get_search_history(db, limit.unwrap_or(20)).await.map_err(|e| e.to_string())?;
+    let guard = state.sqlite.lock().unwrap();
+    let db = guard.as_ref().ok_or("DB not initialized")?;
+    let history = DbOperations::get_search_history(db, limit.unwrap_or(20)).map_err(|e| e.to_string())?;
     Ok(serde_json::to_value(history).unwrap_or_default())
 }
 
 #[tauri::command]
 pub async fn cmd_get_distinct_objects(state: State<'_, AppState>) -> Result<Vec<String>, String> {
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_distinct_objects(db).await.map_err(|e| e.to_string())
+    let guard = state.sqlite.lock().unwrap();
+    let db = guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::get_distinct_objects(db).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

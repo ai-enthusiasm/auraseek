@@ -52,6 +52,7 @@ struct Prior {
 pub struct FaceModel {
     yunet_path: String,
     recognizer_path: String,
+    num_threads: usize,
     backend: i32,
     target: i32,
     yunet_session: Session,
@@ -89,7 +90,7 @@ impl FaceModel {
         priors
     }
 
-    pub fn new(yunet_path: &str, sface_path: &str) -> Result<Self> {
+    pub fn new(yunet_path: &str, sface_path: &str, num_threads: usize) -> Result<Self> {
         let size = Size::new(320, 320);
         
         #[cfg(target_os = "macos")]
@@ -105,10 +106,9 @@ impl FaceModel {
             (opencv::dnn::DNN_BACKEND_OPENCV, opencv::dnn::DNN_TARGET_CPU, "CPU")
         };
 
-        log_info!("model: {:<45} | provider: {}", yunet_path, provider_name);
-        log_info!("model: {:<45} | provider: {}", sface_path, provider_name);
+        log_info!("model: {:<45} | provider: {} | threads: {}", yunet_path, provider_name, num_threads);
 
-        let yunet_session = build_session(yunet_path)?;
+        let yunet_session = build_session(yunet_path, num_threads)?;
         let recognizer = FaceRecognizerSF::create(
             sface_path, "", backend, target
         )?;
@@ -116,6 +116,7 @@ impl FaceModel {
         Ok(Self {
             yunet_path: yunet_path.to_string(),
             recognizer_path: sface_path.to_string(),
+            num_threads,
             backend,
             target,
             yunet_session,
@@ -130,7 +131,7 @@ impl FaceModel {
     }
 
     fn rebuild_models(&mut self) -> Result<()> {
-        self.yunet_session = build_session(&self.yunet_path)?;
+        self.yunet_session = build_session(&self.yunet_path, self.num_threads)?;
         self.recognizer = FaceRecognizerSF::create(
             &self.recognizer_path,
             "",

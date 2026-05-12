@@ -1,5 +1,3 @@
-/// Database operations ? SurrealDB v3 edition
-/// Split by domain responsibility.
 pub mod media;
 pub mod embedding;
 pub mod person;
@@ -10,37 +8,22 @@ pub mod album;
 pub mod duplicates;
 
 use anyhow::Result;
+use rusqlite::{params, Connection};
 use std::collections::HashMap;
-use crate::infrastructure::database::surreal::SurrealDb;
 use crate::core::models::{
     SearchResult, SearchResultMeta, TimelineItem, TimelineGroup,
     DetectedObject, BboxInfo, DetectedFace,
 };
-use crate::infrastructure::database::models::MediaRow;
-use surrealdb::types::{RecordId, RecordIdKey};
-use chrono::Datelike;
+use crate::infrastructure::database::models::{
+    MediaRow, FileInfo, MediaMetadata, ObjectEntry, FaceEntry, Bbox,
+};
 
 pub struct DbOperations;
 
-pub fn record_id_to_string(id: &RecordId) -> String {
-    let key_str = match &id.key {
-        RecordIdKey::String(s) => s.clone(),
-        RecordIdKey::Number(n) => n.to_string(),
-        _ => "unknown".to_string(),
-    };
-    format!("{}:{}", id.table, key_str)
-}
-
-#[allow(dead_code)]
-fn strip_table_prefix(id: &str) -> &str {
-    id.find(':').map(|i| &id[i+1..]).unwrap_or(id)
-}
-
 pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> SearchResult {
-    let id_str = record_id_to_string(&row.id);
-    let base   = source_dir.trim_end_matches('/');
+    let base = source_dir.trim_end_matches('/');
     SearchResult {
-        media_id:         id_str,
+        media_id:         row.id.clone(),
         similarity_score: score,
         file_path:        format!("{}/{}", base, row.file.name),
         media_type:       row.media_type.clone(),
@@ -57,12 +40,130 @@ pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> Sea
         }).collect(),
         metadata: SearchResultMeta {
             width: row.metadata.width, height: row.metadata.height,
-            created_at: row.metadata.created_at.as_ref().map(|dt: &surrealdb::types::Datetime| dt.to_string()),
+            created_at: row.metadata.created_at.clone(),
             objects: row.objects.iter().map(|o| o.class_name.clone()).collect(),
             faces: row.faces.iter().filter_map(|f| f.name.clone()).collect(),
         },
         thumbnail_path: row.thumbnail.clone(),
     }
+}
+
+/// Read objects from media_objects table for a given media_id.
+fn read_objects(conn: &Connection, media_id: &str) -> Result<Vec<ObjectEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT class_name, conf, bbox_x, bbox_y, bbox_w, bbox_h, mask_area, mask_path, mask_rle
+         FROM media_objects WHERE media_id = ?1"
+    )?;
+    let rows = stmt.query_map(params![media_id], |r| {
+        let mask_rle_json: Option<String> = r.get(8)?;
+        Ok(ObjectEntry {
+            class_name: r.get(0)?,
+            conf:       r.get(1)?,
+            bbox: Bbox { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? },
+            mask_area:  r.get(6)?,
+            mask_path:  r.get(7)?,
+            mask_rle:   mask_rle_json.and_then(|j| serde_json::from_str(&j).ok()),
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Read faces from media_faces table for a given media_id.
+fn read_faces(conn: &Connection, media_id: &str) -> Result<Vec<FaceEntry>> {
+    let mut stmt = conn.prepare(
+        "SELECT face_id, name, conf, bbox_x, bbox_y, bbox_w, bbox_h
+         FROM media_faces WHERE media_id = ?1"
+    )?;
+    let rows = stmt.query_map(params![media_id], |r| {
+        Ok(FaceEntry {
+            face_id: r.get(0)?,
+            name:    r.get(1)?,
+            conf:    r.get(2)?,
+            bbox: Bbox { x: r.get(3)?, y: r.get(4)?, w: r.get(5)?, h: r.get(6)? },
+        })
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// Assemble a MediaRow from a rusqlite Row (base media columns) + child tables.
+fn media_row_from_sqlite(r: &rusqlite::Row) -> rusqlite::Result<MediaRowBase> {
+    Ok(MediaRowBase {
+        id:         r.get("id")?,
+        media_type: r.get("media_type")?,
+        file_name:  r.get("file_name")?,
+        file_size:  r.get::<_, i64>("file_size")? as u64,
+        file_sha256:r.get("file_sha256")?,
+        file_phash: r.get("file_phash")?,
+        meta_width: r.get("meta_width")?,
+        meta_height:r.get("meta_height")?,
+        meta_duration: r.get("meta_duration")?,
+        meta_fps:   r.get("meta_fps")?,
+        meta_created_at: r.get("meta_created_at")?,
+        meta_modified_at: r.get("meta_modified_at")?,
+        processed:  r.get::<_, i32>("processed")? != 0,
+        favorite:   r.get::<_, i32>("favorite")? != 0,
+        is_hidden:  r.get::<_, i32>("is_hidden")? != 0,
+        deleted_at: r.get("deleted_at")?,
+        thumbnail:  r.get("thumbnail")?,
+    })
+}
+
+struct MediaRowBase {
+    id: String, media_type: String, file_name: String, file_size: u64,
+    file_sha256: String, file_phash: Option<String>,
+    meta_width: Option<u32>, meta_height: Option<u32>,
+    meta_duration: Option<f64>, meta_fps: Option<f64>,
+    meta_created_at: Option<String>, meta_modified_at: Option<String>,
+    processed: bool, favorite: bool, is_hidden: bool,
+    deleted_at: Option<String>, thumbnail: Option<String>,
+}
+
+fn base_to_media_row(b: MediaRowBase, objects: Vec<ObjectEntry>, faces: Vec<FaceEntry>) -> MediaRow {
+    MediaRow {
+        id: b.id,
+        media_type: b.media_type,
+        file: FileInfo { name: b.file_name, size: b.file_size, sha256: b.file_sha256, phash: b.file_phash },
+        metadata: MediaMetadata {
+            width: b.meta_width, height: b.meta_height,
+            duration: b.meta_duration, fps: b.meta_fps,
+            created_at: b.meta_created_at, modified_at: b.meta_modified_at,
+        },
+        objects, faces,
+        processed: b.processed, favorite: b.favorite,
+        thumbnail: b.thumbnail, deleted_at: b.deleted_at, is_hidden: b.is_hidden,
+    }
+}
+
+/// Read a single MediaRow by ID, including objects and faces from child tables.
+pub fn read_media_row(conn: &Connection, media_id: &str) -> Result<Option<MediaRow>> {
+    use rusqlite::OptionalExtension;
+    let base = conn.query_row(
+        "SELECT * FROM media WHERE id = ?1", params![media_id], media_row_from_sqlite,
+    ).optional()?;
+    match base {
+        None => Ok(None),
+        Some(b) => {
+            let objects = read_objects(conn, media_id)?;
+            let faces = read_faces(conn, media_id)?;
+            Ok(Some(base_to_media_row(b, objects, faces)))
+        }
+    }
+}
+
+/// Execute a SQL query that returns media rows, and read full MediaRow for each
+/// (including objects/faces from child tables).
+pub fn read_media_rows_from_query(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Vec<MediaRow>> {
+    let mut stmt = conn.prepare(sql)?;
+    let bases: Vec<MediaRowBase> = stmt.query_map(params, media_row_from_sqlite)?
+        .filter_map(|r| r.ok())
+        .collect();
+    let mut rows = Vec::with_capacity(bases.len());
+    for b in bases {
+        let objects = read_objects(conn, &b.id)?;
+        let faces = read_faces(conn, &b.id)?;
+        rows.push(base_to_media_row(b, objects, faces));
+    }
+    Ok(rows)
 }
 
 impl DbOperations {
@@ -83,15 +184,15 @@ impl DbOperations {
             let file_path = format!("{}/{}", base, row.file.name);
             let thumbnail_path = row.thumbnail.clone();
             let item = TimelineItem {
-                media_id:   record_id_to_string(&row.id),
+                media_id:   row.id.clone(),
                 file_path, media_type: row.media_type.clone(),
                 width: row.metadata.width, height: row.metadata.height,
-                created_at: row.metadata.created_at.as_ref().map(|dt: &surrealdb::types::Datetime| dt.to_string()),
+                created_at: row.metadata.created_at.clone(),
                 objects:  row.objects.iter().map(|o| o.class_name.clone()).collect(),
                 faces:    row.faces.iter().filter_map(|f| f.name.clone()).collect(),
                 face_ids: row.faces.iter().map(|f| f.face_id.clone()).collect(),
                 favorite: row.favorite,
-                deleted_at: row.deleted_at.as_ref().map(|dt: &surrealdb::types::Datetime| dt.to_string()),
+                deleted_at: row.deleted_at.clone(),
                 is_hidden: row.is_hidden,
                 thumbnail_path,
                 detected_objects: row.objects.iter().map(|o| DetectedObject {
@@ -116,14 +217,18 @@ impl DbOperations {
 }
 
 fn parse_ym(row: &MediaRow) -> (i32, u32) {
-    if let Some(ref dt) = row.metadata.created_at { return (dt.year(), dt.month() as u32); }
-    if let Some(ref dt) = row.metadata.modified_at { return (dt.year(), dt.month() as u32); }
+    if let Some(ref s) = row.metadata.created_at {
+        if let Some(ym) = parse_year_month_from_str(s) { return ym; }
+    }
+    if let Some(ref s) = row.metadata.modified_at {
+        if let Some(ym) = parse_year_month_from_str(s) { return ym; }
+    }
     (1970, 1)
 }
 
 fn format_month_label(year: i32, month: u32) -> String {
-    let months = ["Th?ng 1","Th?ng 2","Th?ng 3","Th?ng 4","Th?ng 5","Th?ng 6",
-                  "Th?ng 7","Th?ng 8","Th?ng 9","Th?ng 10","Th?ng 11","Th?ng 12"];
+    let months = ["Tháng 1","Tháng 2","Tháng 3","Tháng 4","Tháng 5","Tháng 6",
+                  "Tháng 7","Tháng 8","Tháng 9","Tháng 10","Tháng 11","Tháng 12"];
     let m = months.get((month.saturating_sub(1)) as usize).unwrap_or(&"");
     format!("{} {}", m, year)
 }

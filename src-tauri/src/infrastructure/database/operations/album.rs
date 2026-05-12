@@ -1,99 +1,99 @@
 use anyhow::Result;
-use crate::infrastructure::database::surreal::SurrealDb;
-use crate::infrastructure::database::models::MediaRow;
+use rusqlite::params;
+use crate::infrastructure::database::SqliteDb;
 use crate::core::models::{TimelineGroup, CustomAlbum};
-use surrealdb::types::{RecordId, SurrealValue};
-use super::{DbOperations, record_id_to_string};
+use super::{DbOperations, read_media_rows_from_query};
 
 impl DbOperations {
-    pub fn parse_record_id(id_str: &str) -> Result<RecordId> {
-        let (tb, id) = id_str.split_once(':')
-            .ok_or_else(|| anyhow::anyhow!("Invalid record ID format: {}", id_str))?;
-        Ok(RecordId::new(tb, id))
-    }
-
-    pub async fn create_album(db: &SurrealDb, title: String) -> Result<String> {
+    pub fn create_album(db: &SqliteDb, title: String) -> Result<String> {
         crate::log_info!("🔨 [DB] Creating album: {}", title);
-        let mut res = db.db.query("CREATE custom_album SET title = $title, media_ids = [], created_at = time::now()")
-            .bind(("title", title)).await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct AlbumRow { id: RecordId }
-        let rows: Vec<AlbumRow> = res.take(0)?;
-        if let Some(r) = rows.into_iter().next() {
-            let id = record_id_to_string(&r.id);
-            crate::log_info!("✅ [DB] Album created successfully: {}", id);
-            Ok(id)
-        } else {
-            crate::log_error!("❌ [DB] Failed to create album row");
-            Err(anyhow::anyhow!("Không tạo được bản ghi album trong cơ sở dữ liệu"))
-        }
+        let id = uuid::Uuid::new_v4().to_string();
+        let conn = db.conn();
+        conn.execute(
+            "INSERT INTO custom_album (id, title) VALUES (?1, ?2)",
+            params![id, title],
+        )?;
+        crate::log_info!("✅ [DB] Album created successfully: {}", id);
+        Ok(id)
     }
 
-    pub async fn get_albums(db: &SurrealDb, source_dir: &str) -> Result<Vec<CustomAlbum>> {
+    pub fn get_albums(db: &SqliteDb, source_dir: &str) -> Result<Vec<CustomAlbum>> {
         crate::log_info!("🔍 [DB] Fetching all albums...");
-        let mut res = db.db.query(
-            "SELECT id, title, created_at,
-             array::len(media_ids) as count,
-             (SELECT VALUE file.name FROM media WHERE id = $parent.media_ids[0] LIMIT 1)[0] as cover_name,
-             (SELECT VALUE thumbnail FROM media WHERE id = $parent.media_ids[0] LIMIT 1)[0] as cover_thumb
-             FROM custom_album ORDER BY created_at DESC"
-        ).await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct Row { id: RecordId, title: String, count: Option<usize>, cover_name: Option<String>, cover_thumb: Option<String> }
-        let rows: Vec<Row> = res.take(0)?;
-        crate::log_info!("📂 [DB] Found {} manual albums", rows.len());
+        let conn = db.conn();
+        let mut stmt = conn.prepare(
+            "SELECT a.id, a.title,
+                    (SELECT COUNT(*) FROM album_media am WHERE am.album_id = a.id) AS cnt,
+                    (SELECT m.file_name FROM album_media am2 JOIN media m ON m.id = am2.media_id WHERE am2.album_id = a.id LIMIT 1) AS cover_name,
+                    (SELECT m.thumbnail FROM album_media am3 JOIN media m ON m.id = am3.media_id WHERE am3.album_id = a.id LIMIT 1) AS cover_thumb
+             FROM custom_album a ORDER BY a.created_at DESC"
+        )?;
         let base = source_dir.trim_end_matches('/');
-        let mut albums = Vec::new();
-        for r in rows {
-            let cover_url = if let Some(t) = r.cover_thumb {
-                Some(if std::path::Path::new(&t).is_absolute() { t } else { format!("{}/{}", base, t) })
-            } else if let Some(n) = r.cover_name {
-                Some(format!("{}/{}", base, n))
-            } else { None };
-            crate::log_info!("  📷 Album '{}' count={} cover={:?}", r.title, r.count.unwrap_or(0), cover_url);
-            albums.push(CustomAlbum { id: record_id_to_string(&r.id), title: r.title, count: r.count.unwrap_or(0) as u32, cover_url });
-        }
+        let albums: Vec<CustomAlbum> = stmt.query_map([], |r| {
+            let id: String = r.get(0)?;
+            let title: String = r.get(1)?;
+            let count: i64 = r.get(2)?;
+            let cover_name: Option<String> = r.get(3)?;
+            let cover_thumb: Option<String> = r.get(4)?;
+            Ok((id, title, count as u32, cover_name, cover_thumb))
+        })?.filter_map(|r| r.ok()).map(|(id, title, count, cover_name, cover_thumb)| {
+            let cover_url = if let Some(ref t) = cover_thumb {
+                Some(if std::path::Path::new(t).is_absolute() { t.clone() } else { format!("{}/{}", base, t) })
+            } else {
+                cover_name.as_ref().map(|n| format!("{}/{}", base, n))
+            };
+            crate::log_info!("  📷 Album '{}' count={} cover={:?}", title, count, cover_url);
+            CustomAlbum { id, title, count, cover_url }
+        }).collect();
+
+        crate::log_info!("📂 [DB] Found {} manual albums", albums.len());
         Ok(albums)
     }
 
-    pub async fn add_to_album(db: &SurrealDb, album_id: &str, media_ids: Vec<String>) -> Result<()> {
+    pub fn add_to_album(db: &SqliteDb, album_id: &str, media_ids: Vec<String>) -> Result<()> {
         crate::log_info!("➕ [DB] Adding {} files to album: {}", media_ids.len(), album_id);
-        let album_rid = Self::parse_record_id(album_id)?;
-        let mut mids = Vec::new();
-        for mid in media_ids {
-            if let Ok(rid) = Self::parse_record_id(&mid) { mids.push(rid); }
+        let conn = db.conn();
+        for mid in &media_ids {
+            conn.execute(
+                "INSERT OR IGNORE INTO album_media (album_id, media_id) VALUES (?1, ?2)",
+                params![album_id, mid],
+            )?;
         }
-        let mut resp = db.db.query("UPDATE $album SET media_ids = array::distinct(array::add(media_ids, $mids)) RETURN count(media_ids) as total")
-            .bind(("album", album_rid)).bind(("mids", mids)).await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct CountRow { total: Option<u32> }
-        let res: Vec<CountRow> = resp.take(0)?;
-        if let Some(r) = res.get(0) { crate::log_info!("📋 [DB] Verified Album now has {} items", r.total.unwrap_or(0)); }
-        crate::log_info!("✅ [DB] Successfully updated media_ids array");
+        let total: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM album_media WHERE album_id = ?1",
+            params![album_id],
+            |r| r.get(0),
+        )?;
+        crate::log_info!("📋 [DB] Verified Album now has {} items", total);
         Ok(())
     }
 
-    pub async fn remove_from_album(db: &SurrealDb, album_id: &str, media_ids: Vec<String>) -> Result<()> {
-        let album_rid = Self::parse_record_id(album_id)?;
-        let mut mids = Vec::new();
-        for mid in media_ids { mids.push(Self::parse_record_id(&mid)?); }
-        db.db.query("UPDATE $album SET media_ids = array::filter(media_ids, |$id| !$mids CONTAINS $id)")
-            .bind(("album", album_rid)).bind(("mids", mids)).await?.check()?;
+    pub fn remove_from_album(db: &SqliteDb, album_id: &str, media_ids: Vec<String>) -> Result<()> {
+        let conn = db.conn();
+        for mid in &media_ids {
+            conn.execute(
+                "DELETE FROM album_media WHERE album_id = ?1 AND media_id = ?2",
+                params![album_id, mid],
+            )?;
+        }
         Ok(())
     }
 
-    pub async fn delete_album(db: &SurrealDb, album_id: &str) -> Result<()> {
-        let album_rid = Self::parse_record_id(album_id)?;
-        db.db.query("DELETE $album").bind(("album", album_rid)).await?.check()?;
+    pub fn delete_album(db: &SqliteDb, album_id: &str) -> Result<()> {
+        let conn = db.conn();
+        conn.execute("DELETE FROM custom_album WHERE id = ?1", params![album_id])?;
         Ok(())
     }
 
-    pub async fn get_album_photos(db: &SurrealDb, album_id: &str, source_dir: &str) -> Result<Vec<TimelineGroup>> {
-        let album_rid = Self::parse_record_id(album_id)?;
-        let mut res = db.db.query(
-            "SELECT * FROM media WHERE id INSIDE (SELECT VALUE media_ids FROM $album LIMIT 1)[0] AND deleted_at = NONE AND is_hidden = false ORDER BY metadata.created_at DESC"
-        ).bind(("album", album_rid)).await?;
-        let rows: Vec<MediaRow> = res.take(0)?;
+    pub fn get_album_photos(db: &SqliteDb, album_id: &str, source_dir: &str) -> Result<Vec<TimelineGroup>> {
+        let conn = db.conn();
+        let rows = read_media_rows_from_query(
+            &conn,
+            "SELECT m.* FROM media m
+             JOIN album_media am ON am.media_id = m.id
+             WHERE am.album_id = ?1 AND m.deleted_at IS NULL AND m.is_hidden = 0
+             ORDER BY m.meta_created_at DESC",
+            &[&album_id],
+        )?;
         Self::group_rows_into_timeline(rows, source_dir)
     }
 }

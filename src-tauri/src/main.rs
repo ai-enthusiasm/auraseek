@@ -3,7 +3,6 @@
 mod core;
 mod shared;
 mod infrastructure;
-/// Headless pipeline dumps (no Tauri / GTK). Invoked via `auraseek debug-ingest <in> <out>`.
 mod debug;
 mod platform;
 mod app;
@@ -13,32 +12,8 @@ use anyhow::Result;
 use shared::logging::Logger;
 
 use app::state::AppState;
-use app::helpers::start_db_sidecar;
 use core::config::AppConfig;
 use interface::streaming::spawn_stream_server;
-
-#[macro_export]
-macro_rules! sdb_log_info {
-    ($($arg:tt)*) => ($crate::shared::logging::logger::Logger::info(&format!(
-        "{}{}[SurrealDB]{}{} {}",
-        $crate::shared::logging::logger::GREEN,
-        $crate::shared::logging::logger::BOLD,
-        $crate::shared::logging::logger::RESET,
-        $crate::shared::logging::logger::RESET,
-        format!($($arg)*)
-    )));
-}
-#[macro_export]
-macro_rules! sdb_log_warn {
-    ($($arg:tt)*) => ($crate::shared::logging::logger::Logger::warn(&format!(
-        "{}{}[SurrealDB]{}{} {}",
-        $crate::shared::logging::logger::RED,
-        $crate::shared::logging::logger::BOLD,
-        $crate::shared::logging::logger::RESET,
-        $crate::shared::logging::logger::RESET,
-        format!($($arg)*)
-    )));
-}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -64,7 +39,6 @@ pub fn run() {
 
             let state = app.state::<AppState>();
             *state.data_dir.lock().unwrap() = base_data_dir;
-            let _ = start_db_sidecar(&app.handle());
 
             Ok(())
         })
@@ -77,12 +51,14 @@ pub fn run() {
                     if let Ok(mut guard) = state.watcher_handle.lock() {
                         if let Some(handle) = guard.take() { handle.stop(); crate::log_info!("🛑 FS watcher stopped on exit"); }
                     }
-                    if let Ok(mut guard) = state.surreal_child.lock() {
+                    if let Ok(mut guard) = state.qdrant_child.lock() {
                         if let Some(mut child) = guard.take() {
-                            crate::log_info!("🛑 Terminating SurrealDB sidecar (pid={})...", child.id());
+                            crate::log_info!("🛑 Terminating Qdrant sidecar (pid={})...", child.id());
                             let _ = child.kill();
                         }
                     }
+                    state.qdrant_runtime_grpc_port.store(0, std::sync::atomic::Ordering::SeqCst);
+                    state.qdrant_runtime_http_port.store(0, std::sync::atomic::Ordering::SeqCst);
                 }
             }
         })
@@ -134,7 +110,6 @@ pub fn run() {
             interface::commands::system::cmd_get_device_name,
             interface::commands::system::cmd_get_file_size,
             interface::commands::system::cmd_authenticate_os,
-            interface::commands::system::cmd_set_db_config,
             interface::commands::system::cmd_get_status,
             interface::streaming::cmd_get_stream_port,
         ])
@@ -147,7 +122,6 @@ fn main() -> Result<()> {
     let cfg = AppConfig::global().clone();
     let log_path = cfg.log_path.to_string_lossy().to_string();
 
-    // Force-create the log file early so users can always locate it.
     if let Some(parent) = cfg.log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
@@ -158,7 +132,6 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = std::env::args().collect();
 
-    // Headless debug export — must run before Tauri (no display / GTK on servers).
     if args.len() >= 2 && args[1] == "debug-ingest" {
         if args.len() < 4 {
             eprintln!(

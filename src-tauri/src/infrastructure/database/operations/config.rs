@@ -1,22 +1,27 @@
 use anyhow::Result;
-use crate::infrastructure::database::surreal::SurrealDb;
-use surrealdb::types::SurrealValue;
+use rusqlite::params;
+use crate::infrastructure::database::SqliteDb;
 use super::DbOperations;
 
 impl DbOperations {
-    pub async fn get_source_dir(db: &SurrealDb) -> Result<Option<String>> {
-        let mut res = db.db.query("SELECT source_dir FROM config_auraseek:main").await?;
-        #[derive(serde::Deserialize, SurrealValue)]
-        struct Row { source_dir: Option<String> }
-        let rows: Vec<Row> = res.take(0)?;
-        Ok(rows.into_iter().next().and_then(|r| r.source_dir))
+    pub fn get_source_dir(db: &SqliteDb) -> Result<Option<String>> {
+        use rusqlite::OptionalExtension;
+        let conn = db.conn();
+        let dir = conn.query_row(
+            "SELECT source_dir FROM config_auraseek WHERE id = 'main'",
+            [],
+            |r| r.get::<_, String>(0),
+        ).optional()?;
+        Ok(dir)
     }
 
-    pub async fn set_source_dir(db: &SurrealDb, source_dir: &str) -> Result<()> {
-        let dir = source_dir.to_string();
-        db.db.query("UPSERT config_auraseek:main SET source_dir = $dir, updated_at = time::now()")
-            .bind(("dir", dir)).await?.check()
-            .map_err(|e| anyhow::anyhow!("set_source_dir failed: {}", e))?;
+    pub fn set_source_dir(db: &SqliteDb, source_dir: &str) -> Result<()> {
+        let conn = db.conn();
+        conn.execute(
+            "INSERT OR REPLACE INTO config_auraseek (id, source_dir, updated_at)
+             VALUES ('main', ?1, datetime('now'))",
+            params![source_dir],
+        )?;
         Ok(())
     }
 }

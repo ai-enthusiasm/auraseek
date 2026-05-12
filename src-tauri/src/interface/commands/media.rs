@@ -14,9 +14,9 @@ pub async fn cmd_get_source_dir(state: State<'_, AppState>) -> Result<String, St
 #[tauri::command]
 pub async fn cmd_set_source_dir(dir: String, state: State<'_, AppState>) -> Result<(), String> {
     {
-        let db_guard = state.db.lock().await;
-        let db = db_guard.as_ref().ok_or("DB not initialized")?;
-        DbOperations::set_source_dir(db, &dir).await.map_err(|e| e.to_string())?;
+        let guard = state.sqlite.lock().unwrap();
+        let db = guard.as_ref().ok_or("DB not initialized")?;
+        DbOperations::set_source_dir(db, &dir).map_err(|e| e.to_string())?;
     }
     *state.source_dir.lock().await = dir.clone();
     crate::log_info!("📂 source_dir updated to: {}", dir);
@@ -47,11 +47,12 @@ pub async fn cmd_auto_scan(
 
     { let st = state.sync_status.lock().await; if st.state == "syncing" { return Ok("Already syncing".into()); } }
 
-    let engine_arc = state.engine.clone();
-    let db_arc     = state.db.clone();
-    let sync_arc   = state.sync_status.clone();
-    let dir        = source_dir.clone();
-    let epoch_arc  = state.library_reset_epoch.clone();
+    let engine_arc  = state.engine.clone();
+    let sqlite_arc  = state.sqlite.clone();
+    let qdrant_arc  = state.qdrant_client.clone();
+    let sync_arc    = state.sync_status.clone();
+    let dir         = source_dir.clone();
+    let epoch_arc   = state.library_reset_epoch.clone();
     let epoch_at_invoke = state.library_reset_epoch.load(Ordering::SeqCst);
 
     crate::log_info!("🔄 Auto-scan starting for: {}", dir);
@@ -65,17 +66,21 @@ pub async fn cmd_auto_scan(
     let abort_flag = state.abort_sync.clone();
     tokio::spawn(async move {
         if epoch_arc.load(Ordering::SeqCst) != epoch_at_invoke {
-            crate::log_info!("🛑 Auto-scan task dropped (library reset after schedule)");
+            crate::log_info!("🛑 Auto-scan task dropped (library reset / stale epoch)");
             let mut st = sync_arc.lock().await;
             *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: String::new() };
             return;
         }
-        if let Some(ref sdb) = *db_arc.lock().await {
-            let _ = DbOperations::prune_missing_media(sdb, &dir).await;
+        {
+            let guard = sqlite_arc.lock().unwrap();
+            if let Some(ref db) = *guard {
+                let _ = DbOperations::prune_missing_media(db, &dir);
+            }
         }
         let result = crate::app::ingest::ingest_folder(
             dir.clone(),
-            db_arc,
+            sqlite_arc,
+            qdrant_arc,
             engine_arc,
             Some(app_handle),
             thumb_cache,
@@ -105,14 +110,16 @@ pub async fn cmd_scan_folder(
     source_path: String, app: tauri::AppHandle, state: State<'_, AppState>,
 ) -> Result<IngestSummary, String> {
     let engine_arc = state.engine.clone();
-    let db_arc     = state.db.clone();
+    let sqlite_arc = state.sqlite.clone();
+    let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = state.data_dir.lock().unwrap().join("thumbnails");
     let abort_flag = state.abort_sync.clone();
     let epoch_arc = state.library_reset_epoch.clone();
     let epoch_at_invoke = state.library_reset_epoch.load(Ordering::SeqCst);
     crate::app::ingest::ingest_folder(
         source_path,
-        db_arc,
+        sqlite_arc,
+        qdrant_arc,
         engine_arc,
         Some(app),
         Some(thumb_cache_dir),
@@ -130,9 +137,10 @@ pub async fn cmd_ingest_files(
     let source_dir = state.source_dir.lock().await.clone();
     if source_dir.is_empty() { return Err("Chưa chọn thư mục nguồn ảnh".into()); }
     let engine_arc = state.engine.clone();
-    let db_arc     = state.db.clone();
+    let sqlite_arc = state.sqlite.clone();
+    let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = Some(state.data_dir.lock().unwrap().join("thumbnails"));
-    crate::app::ingest::ingest_files(file_paths, source_dir, db_arc, engine_arc, thumb_cache_dir)
+    crate::app::ingest::ingest_files(file_paths, source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir)
         .await.map_err(|e| e.to_string())
 }
 
@@ -153,50 +161,56 @@ pub async fn cmd_ingest_image_data(
     std::fs::write(&dest, &bytes).map_err(|e| format!("Không thể lưu ảnh: {}", e))?;
     crate::log_info!("📋 Clipboard image saved: {}", dest.display());
     let engine_arc = state.engine.clone();
-    let db_arc     = state.db.clone();
+    let sqlite_arc = state.sqlite.clone();
+    let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = Some(state.data_dir.lock().unwrap().join("thumbnails"));
-    crate::app::ingest::ingest_files(vec![dest.to_string_lossy().to_string()], source_dir, db_arc, engine_arc, thumb_cache_dir)
+    crate::app::ingest::ingest_files(vec![dest.to_string_lossy().to_string()], source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir)
         .await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_cleanup_database(state: State<'_, AppState>) -> Result<usize, String> {
     let source_dir = state.source_dir.lock().await.clone();
-    let db_guard = state.db.lock().await;
-    if let Some(ref sdb) = *db_guard {
-        let _ = DbOperations::auto_purge_trash(sdb, &source_dir).await;
-        let count = DbOperations::prune_missing_media(sdb, &source_dir).await.map_err(|e| e.to_string())?;
+    let guard = state.sqlite.lock().unwrap();
+    if let Some(ref db) = *guard {
+        let _ = DbOperations::auto_purge_trash(db, &source_dir);
+        let count = DbOperations::prune_missing_media(db, &source_dir).map_err(|e| e.to_string())?;
         Ok(count)
     } else { Err("DB not initialized".into()) }
 }
 
 #[tauri::command]
 pub async fn cmd_reset_database(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
-    // 0. Invalidate any in-flight auto-scan / ingest_folder so it cannot resurrect config_auraseek
     let _new_epoch = state.bump_library_reset_epoch();
 
-    // 1. Signal all background tasks to stop
     state.abort_sync.store(true, std::sync::atomic::Ordering::SeqCst);
     { let mut st = state.sync_status.lock().await; *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: "".into() }; }
-    
-    // 2. Stop the file watcher
+
     if let Ok(mut guard) = state.watcher_handle.lock() {
         if let Some(handle) = guard.take() { handle.stop(); crate::log_info!("👁️  FS watcher stopped due to database reset"); }
     }
 
-    // 3. Wait a short moment to allow the AI loop to exit its current image processing if active
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 
-    // 4. Clear the database and configuration
-    let db_guard = state.db.lock().await;
-    let db = db_guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::clear_database(db).await.map_err(|e| e.to_string())?;
-    
-    // 5. Reset the source directory in memory
+    {
+        let guard = state.sqlite.lock().unwrap();
+        let db = guard.as_ref().ok_or("DB not initialized")?;
+        DbOperations::clear_database(db).map_err(|e| e.to_string())?;
+    }
+
+    {
+        let config = crate::core::config::AppConfig::global();
+        let collection = &config.qdrant_collection;
+        let qdrant_guard = state.qdrant_client.lock().await;
+        if let Some(ref client) = *qdrant_guard {
+            let _ = client.delete_collection(collection).await;
+            let _ = crate::infrastructure::database::QdrantService::ensure_collection(client, collection, 384).await;
+        }
+    }
+
     *state.source_dir.lock().await = String::new();
     crate::log_info!("🧹 Database and configuration reset completed.");
-    
-    // 6. Notify the frontend
+
     use tauri::Emitter;
     let _ = app.emit("database-reset", ());
 

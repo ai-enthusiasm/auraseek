@@ -11,10 +11,10 @@ pub struct AuraModel {
 }
 
 impl AuraModel {
-    pub fn new(vision_path: &str, text_path: &str) -> Result<Self> {
+    pub fn new(vision_path: &str, text_path: &str, num_threads: usize) -> Result<Self> {
         Ok(Self {
-            vision_session: build_session(vision_path)?,
-            text_session:   build_session(text_path)?,
+            vision_session: build_session(vision_path, num_threads)?,
+            text_session:   build_session(text_path, num_threads)?,
         })
     }
 

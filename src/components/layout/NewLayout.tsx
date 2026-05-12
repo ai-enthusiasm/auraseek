@@ -29,7 +29,8 @@ interface NewLayoutProps {
   searchQuery?: string;
   onSearchQueryChange?: (q: string) => void;
   searchImagePath?: string | null;
-  onSearchImageChange?: (path: string | null) => void;
+  searchImageName?: string | null;
+  onSearchImageChange?: (path: string | null, name?: string | null) => void;
   onSearchSubmit?: () => void;
   onFiltersChange?: (filters: ActiveFilters) => void;
   activeFilters?: ActiveFilters;
@@ -52,6 +53,7 @@ export function NewLayout({
   searchQuery = "",
   onSearchQueryChange,
   searchImagePath,
+  searchImageName,
   onSearchImageChange,
   onSearchSubmit,
   onFiltersChange,
@@ -116,20 +118,33 @@ export function NewLayout({
       const bytes = new Uint8Array(arrayBuffer);
       const ext = file.name.split(".").pop() || "jpg";
       const tmpPath = await AuraSeekApi.saveSearchImageTmp(Array.from(bytes), ext);
-      onSearchImageChange?.(tmpPath);
+      const query = searchInputRef.current?.value ?? searchQuery ?? "";
+      if (searchImagePath && searchImagePath !== tmpPath) {
+        await AuraSeekApi.deleteFile(searchImagePath).catch(() => {});
+      }
+      onSearchQueryChange?.(query);
+      onSearchImageChange?.(tmpPath, file.name);
       (window as any).__AURASEEK_SEARCH_TMP_PATH__ = tmpPath;
+      searchInputRef.current?.focus();
     } catch (err) {
       console.error("[AuraSeek] ❌ Error saving temp search image:", err);
+    } finally {
+      e.target.value = "";
     }
   };
 
   const clearSearch = () => {
     if (searchInputRef.current) searchInputRef.current.value = "";
     onSearchQueryChange?.("");
-    onSearchImageChange?.(null);
+    if (searchImagePath) {
+      AuraSeekApi.deleteFile(searchImagePath).catch(() => {});
+    }
+    (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
+    onSearchImageChange?.(null, null);
   };
 
   const currentInputValue = searchInputRef.current?.value || searchQuery || "";
+  const imageFileName = searchImageName || (searchImagePath ? searchImagePath.split(/[/\\]/).pop() || searchImagePath : null);
 
   // Menu items config
   const menuItems = [
@@ -286,7 +301,13 @@ export function NewLayout({
                 />
 
                 <div className="flex items-center gap-2">
-                  {(currentInputValue || searchImagePath) && (
+                  {imageFileName && (
+                    <div className="flex max-w-[180px] shrink-0 items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                      <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{imageFileName}</span>
+                    </div>
+                  )}
+                  {(currentInputValue || imageFileName) && (
                     <button onClick={clearSearch} className="rounded-full p-2 text-zinc-400 hover:text-zinc-900 transition">
                       <X className="w-4 h-4" />
                     </button>
@@ -308,7 +329,7 @@ export function NewLayout({
               </div>
 
               {/* Search History Dropdown */}
-              {searchFocused && !currentInputValue && !searchImagePath && searchHistory.length > 0 && (
+              {searchFocused && !currentInputValue && !imageFileName && searchHistory.length > 0 && (
                 <div className="absolute top-full mt-3 left-0 right-0 bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-white/5 rounded-3xl shadow-2xl overflow-hidden py-3 px-3 z-[150] animate-in fade-in slide-in-from-top-4 duration-300">
                   <div className="text-[11px] font-black text-zinc-300 dark:text-white/20 px-4 py-2 uppercase tracking-[0.2em]">Tìm kiếm gần đây</div>
                   {searchHistory.map((q, i) => (

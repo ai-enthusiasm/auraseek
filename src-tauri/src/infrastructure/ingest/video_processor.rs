@@ -15,9 +15,10 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::platform::process::hidden_command;
-use crate::infrastructure::database::{SurrealDb, DbOperations};
+use crate::infrastructure::database::{SqliteDb, DbOperations};
 use crate::infrastructure::database::models::{ObjectEntry, FaceEntry, Bbox, PersonDoc};
 use crate::infrastructure::ai::AuraSeekEngine;
+use crate::infrastructure::ai::vision::coco_label_vi;
 use crate::{log_info, log_warn};
 
 /// Scene-detection threshold for ffmpeg (0 = no change, 1 = full change).
@@ -32,7 +33,8 @@ const DEDUP_THRESHOLD: f32 = 0.92;
 pub async fn process_video(
     video_path: &str,
     media_id: &str,
-    db: &Arc<Mutex<Option<SurrealDb>>>,
+    sqlite: &Arc<std::sync::Mutex<Option<SqliteDb>>>,
+    qdrant: &Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
     thumb_cache_dir: Option<&std::path::Path>,
 ) -> Result<Option<String>> {
@@ -63,7 +65,6 @@ pub async fn process_video(
         .and_then(|s| s.to_str())
         .unwrap_or("vid");
 
-    // Use a unique temp directory per video — cleaned up after processing.
     let tmp_dir = std::env::temp_dir().join(format!("auraseek_frames_{}_{}", stem, std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp_dir);
     std::fs::create_dir_all(&tmp_dir)?;
@@ -72,8 +73,6 @@ pub async fn process_video(
     for (s_idx, (start, end)) in scenes.iter().enumerate() {
         let len = end.saturating_sub(*start);
         
-        // Pick frames inside the scene to avoid transition fades at boundaries
-        // Take frames at 20%, 50%, and 80% of the scene length
         let frame_candidates = vec![
             start + (len as f64 * 0.2) as u64,
             start + (len as f64 * 0.5) as u64,
@@ -99,7 +98,6 @@ pub async fn process_video(
             }
         }
 
-        // If all frames in this scene are bad, keep at least one (the one closest to optimal brightness)
         if keep.is_empty() && !scene_frames.is_empty() {
             let mut best_idx = 0;
             let mut best_diff = f64::MAX;
@@ -113,7 +111,6 @@ pub async fn process_video(
             keep.push(scene_frames[best_idx].0);
         }
 
-        // Clean up rejected frames from disk
         for (fi, _, _, out_path) in &scene_frames {
             if !keep.contains(fi) {
                 let _ = std::fs::remove_file(out_path);
@@ -132,6 +129,25 @@ pub async fn process_video(
     let mut embed_count = 0usize;
 
     let scenes_clone = scenes.clone();
+    let config = crate::core::config::AppConfig::global();
+    let collection = &config.qdrant_collection;
+    let mut qdrant_ready_for_embeddings = false;
+    let mut embedding_error = false;
+
+    {
+        let qdrant_guard = qdrant.lock().await;
+        if let Some(ref client) = *qdrant_guard {
+            if let Err(e) = DbOperations::delete_embeddings_for_media(client, collection, media_id).await {
+                log_warn!("  ⚠️ delete_embeddings_for_media for video {}: {:#}", media_id, e);
+                embedding_error = true;
+            } else {
+                qdrant_ready_for_embeddings = true;
+            }
+        } else {
+            log_warn!("  ⚠️ Qdrant client unavailable for video {}; media will be reprocessed later", media_id);
+            embedding_error = true;
+        }
+    }
 
     for frame_idx in &frame_jobs {
         let s_idx = scenes_clone.iter().enumerate()
@@ -153,10 +169,10 @@ pub async fn process_video(
             output.objects.len(), output.faces.len(), output.vision_embedding.len()
         );
 
-        // Aggregate objects (keep highest-conf per class)
         for o in &output.objects {
-            let entry = obj_map.entry(o.class_name.clone()).or_insert_with(|| ObjectEntry {
-                class_name: o.class_name.clone(),
+            let class_name = coco_label_vi(&o.class_name).to_string();
+            let entry = obj_map.entry(class_name.clone()).or_insert_with(|| ObjectEntry {
+                class_name,
                 conf:       0.0,
                 bbox:       Bbox { x: o.bbox[0], y: o.bbox[1], w: o.bbox[2]-o.bbox[0], h: o.bbox[3]-o.bbox[1] },
                 mask_area:  Some(o.mask_area),
@@ -171,7 +187,6 @@ pub async fn process_video(
             }
         }
 
-        // Aggregate faces (keep highest-conf per face_id)
         for f in &output.faces {
             let mut is_best = false;
             let entry = face_map.entry(f.face_id.clone()).or_insert_with(|| {
@@ -192,20 +207,22 @@ pub async fn process_video(
             if is_best { face_frame_map.insert(f.face_id.clone(), *frame_idx); }
         }
 
-        // Store embeddings under video's media_id (giữ đầy đủ 3 frame/scene, không dedup)
-        if !output.vision_embedding.is_empty() {
-            let db_guard = db.lock().await;
-            if let Some(ref sdb) = *db_guard {
+        if qdrant_ready_for_embeddings && !output.vision_embedding.is_empty() {
+            let qdrant_guard = qdrant.lock().await;
+            if let Some(ref client) = *qdrant_guard {
                 if let Err(e) = DbOperations::insert_embedding(
-                    sdb, media_id, "video_frame",
+                    client, collection, media_id, "video_frame",
                     Some(timestamp), Some(*frame_idx as u32),
                     output.vision_embedding.clone(),
                 ).await {
-                    log_warn!("  ⚠️ insert_embedding frame {}: {}", frame_idx, e);
+                    log_warn!("  ⚠️ insert_embedding frame {}: {:#}", frame_idx, e);
+                    embedding_error = true;
                 } else {
                     embed_count += 1;
                     log_info!("  ✅ Frame {} @ {:.2}s embedded", frame_idx, timestamp);
                 }
+            } else {
+                embedding_error = true;
             }
         }
     }
@@ -223,7 +240,7 @@ pub async fn process_video(
         ))
         .collect();
 
-    // ── 5. Generate thumbnail from the first processed frame (less likely to be pure black) ──
+    // ── 5. Generate thumbnail from the first processed frame ──
     let video_parent = Path::new(video_path).parent().unwrap_or(Path::new("."));
     if let Some(cache_dir) = thumb_cache_dir {
         let _ = std::fs::create_dir_all(cache_dir);
@@ -234,7 +251,6 @@ pub async fn process_video(
         .map(|d| d.join(&thumb_name))
         .unwrap_or_else(|| video_parent.join(&thumb_name));
 
-    // Prefer the first frame we actually extracted & processed; fall back to frame 0.
     let thumb_frame_idx: u64 = frame_jobs.first().copied().unwrap_or(0);
 
     let thumb_result = if extract_frame(video_path, thumb_frame_idx, fps, &thumb_path).is_ok() {
@@ -254,10 +270,15 @@ pub async fn process_video(
         .or(thumb_result.clone());
 
     {
-        let db_guard = db.lock().await;
-        if let Some(ref sdb) = *db_guard {
-            if let Err(e) = DbOperations::update_media_ai(sdb, media_id, objects, faces, thumb_value_for_db).await {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            if let Err(e) = DbOperations::update_media_ai(db, media_id, objects, faces, thumb_value_for_db) {
                 log_warn!("⚠️ update_media_ai for video {}: {}", media_id, e);
+            }
+            if embedding_error {
+                if let Err(e) = DbOperations::set_media_processed(db, media_id, false) {
+                    log_warn!("⚠️ failed to mark video {} as unprocessed after embedding error: {}", media_id, e);
+                }
             }
             for (fid, conf, bbox, name, fi) in &detected_faces_for_person {
                 let face_thumb_name = format!("{}_face_{}.thumb.jpg", stem, fid);
@@ -270,20 +291,19 @@ pub async fn process_video(
                 let face_thumb_value = thumb_cache_dir
                     .map(|_| face_thumb_path.to_string_lossy().to_string())
                     .unwrap_or(face_thumb_name);
-                if let Err(e) = DbOperations::upsert_person(sdb, PersonDoc {
+                if let Err(e) = DbOperations::upsert_person(db, PersonDoc {
                     face_id:   fid.clone(),
                     name:      name.clone(),
                     thumbnail: Some(face_thumb_value),
                     conf:      Some(*conf),
                     face_bbox: Some(bbox.clone()),
-                }).await {
+                }) {
                     log_warn!("  ⚠️ upsert_person {} for video: {}", fid, e);
                 }
             }
         }
     }
 
-    // Clean up temp frames
     let _ = std::fs::remove_dir_all(&tmp_dir);
 
     log_info!(
@@ -394,7 +414,6 @@ pub(crate) fn is_good_brightness(path: &Path) -> (bool, f64) {
         
         let mut total_luma: u64 = 0;
         for pixel in img.pixels() {
-            // Rec. 601 luma
             let r = pixel[0] as u64;
             let g = pixel[1] as u64;
             let b = pixel[2] as u64;
@@ -406,6 +425,5 @@ pub(crate) fn is_good_brightness(path: &Path) -> (bool, f64) {
         let is_good = avg_luma >= 25.0 && avg_luma <= 240.0;
         return (is_good, avg_luma);
     }
-    // Default to true if opening fails, just so we don't accidentally skip an unreadable valid frame
     (true, 128.0)
 }

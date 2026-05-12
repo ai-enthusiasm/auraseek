@@ -15,7 +15,7 @@ import { FirstRunModal } from "@/components/common/FirstRunModal";
 import { EVENT_FORCE_FIRST_RUN_UI, SESSION_POST_DB_RESET } from "@/components/common/SettingsModal";
 import { LandingPage } from "@/views/LandingPage";
 import ModelDownloadScreen, { type ModelDownloadEvent } from "@/components/common/ModelDownloadScreen";
-import { AuraSeekApi, localFileUrl, streamFileUrl, warmStreamPortCache, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
+import { AuraSeekApi, localFileUrl, streamFileUrlSync, warmStreamPortCache, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
 import type { Photo } from "@/types/photo.type";
 
 type AppRoute = {
@@ -36,6 +36,7 @@ function App() {
   const [route, setRoute] = useState<AppRoute>({ view: "timeline" });
   const [searchQuery, setSearchQuery] = useState("");
   const [searchImagePath, setSearchImagePath] = useState<string | null>(null);
+  const [searchImageName, setSearchImageName] = useState<string | null>(null);
   const searchTempPathRef = useRef<string | null>((window as any).__AURASEEK_SEARCH_TMP_PATH__ || null);
   const [activeFilters, setActiveFilters] = useState<ActiveFilters>({});
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadEvent | null>(null);
@@ -156,6 +157,7 @@ function App() {
           } else {
             // Không chặn isInitialized / thread init đến khi resolve hết streamFileUrl (có thể rất lâu).
             setIsInitialized(true);
+            setHasStarted(true);
             void loadTimeline({ blocking: true }).then(() => {
               if (initGenerationRef.current !== initGenAtStart) return;
               triggerAutoScan();
@@ -195,6 +197,8 @@ function App() {
     setPhotos([]);
     setPeople([]);
     setSearchResults([]);
+    setSearchImagePath(null);
+    setSearchImageName(null);
     setRoute({ view: "timeline" });
     setFirstRunKey((k) => k + 1);
     setShowFirstRun(true);
@@ -234,13 +238,13 @@ function App() {
         filePath: item.file_path,
       });
 
-      // Pha 1: đồng bộ — không chờ streamFileUrl (tránh treo UI phút chục với nhiều video).
-      const quickPhotos: Photo[] = groups.flatMap((g) =>
+      // Pha 1 & duy nhất: đồng bộ toàn bộ thumbnail, ngăn treo RAM/IPC do Promise.all với thư viện lớn
+      const allPhotos: Photo[] = groups.flatMap((g) =>
         g.items.map((item) => {
           let thumbnailUrl: string | undefined;
           if (item.thumbnail_path) {
             if (isAbsThumbPath(item.thumbnail_path)) {
-              thumbnailUrl = undefined;
+              thumbnailUrl = streamFileUrlSync(item.thumbnail_path);
             } else {
               thumbnailUrl = localFileUrl(item.thumbnail_path);
             }
@@ -248,26 +252,7 @@ function App() {
           return itemToPhoto(item, thumbnailUrl);
         })
       );
-      setPhotos(quickPhotos);
-      if (blocking) setTimelineBlockingLoad(false);
-
-      // Pha 2: hydrate thumbnail cache (đường tuyệt đối) nền.
-      const hydrated: Photo[] = await Promise.all(
-        groups.flatMap((g) =>
-          g.items.map(async (item) => {
-            let thumbnailUrl: string | undefined;
-            if (item.thumbnail_path) {
-              if (isAbsThumbPath(item.thumbnail_path)) {
-                thumbnailUrl = await streamFileUrl(item.thumbnail_path);
-              } else {
-                thumbnailUrl = localFileUrl(item.thumbnail_path);
-              }
-            }
-            return itemToPhoto(item, thumbnailUrl);
-          })
-        )
-      );
-      setPhotos(hydrated);
+      setPhotos(allPhotos);
     } catch (err) {
       console.warn("[AuraSeek] ⚠️ Timeline load failed:", err);
     } finally {
@@ -435,29 +420,35 @@ function App() {
   }, [loadTimeline]);
 
   // ── Search ────────────────────────────────────────────────────────
-  const handleSearch = useCallback(async (text: string, imagePath?: string | null) => {
-    const hasFilters = activeFilters && Object.values(activeFilters).some(v => v !== undefined);
+  const handleSearch = useCallback(async (
+    text: string,
+    imagePath?: string | null,
+    filterOverride?: ActiveFilters,
+  ) => {
+    const filtersSource = filterOverride ?? activeFilters;
+    const hasFilters = filtersSource && Object.values(filtersSource).some(v => v !== undefined);
     if (!text.trim() && !imagePath && !hasFilters) {
       setSearchResults([]);
       return;
     }
     setIsSearching(true);
     const filters: ApiFilters = {
-      object: activeFilters.object,
-      face: activeFilters.face,
-      month: activeFilters.month,
-      year: activeFilters.year,
-      media_type: activeFilters.mediaType,
+      object: filtersSource.object,
+      face: filtersSource.face,
+      month: filtersSource.month,
+      year: filtersSource.year,
+      media_type: filtersSource.mediaType,
     };
     try {
       let results: SearchResult[];
+      const queryText = text.trim();
       console.log("[AuraSeek] 🔍 Searching:", { text, imagePath, filters });
-      if (text && imagePath) {
-        results = await AuraSeekApi.searchCombined(text, imagePath, filters);
+      if (queryText && imagePath) {
+        results = await AuraSeekApi.searchCombined(queryText, imagePath, filters);
       } else if (imagePath) {
         results = await AuraSeekApi.searchImage(imagePath, filters);
-      } else if (text.trim()) {
-        results = await AuraSeekApi.searchText(text, filters);
+      } else if (queryText) {
+        results = await AuraSeekApi.searchText(queryText, filters);
       } else if (filters.object) {
         results = await AuraSeekApi.searchObject(filters.object, filters);
       } else if (filters.face) {
@@ -478,6 +469,8 @@ function App() {
       if (searchTempPathRef.current) {
         AuraSeekApi.deleteFile(searchTempPathRef.current).catch(() => {});
         searchTempPathRef.current = null;
+        (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
+        setSearchImagePath(null);
       }
       setIsSearching(false);
     }
@@ -487,22 +480,36 @@ function App() {
     handleSearch(searchQuery, searchImagePath);
   }, [searchQuery, searchImagePath, handleSearch]);
 
-  const handleFiltersChange = useCallback((filters: ActiveFilters) => {
-    setActiveFilters(filters);
-    const hasFilters = Object.values(filters).some(v => v !== undefined);
-    if (hasFilters) {
-      setTimeout(() => {
-        document.getElementById("search-submit-btn")?.click();
-      }, 100);
+  const handleSearchImageChange = useCallback((path: string | null, name?: string | null) => {
+    searchTempPathRef.current = path;
+    setSearchImagePath(path);
+    if (name !== undefined) {
+      setSearchImageName(name);
     }
   }, []);
 
+  const handleFiltersChange = useCallback((filters: ActiveFilters) => {
+    setActiveFilters(filters);
+    const hasFilters = Object.values(filters).some(v => v !== undefined);
+    if (hasFilters || searchQuery.trim() || searchImagePath) {
+      handleSearch(searchQuery, searchImagePath, filters);
+    } else {
+      setSearchResults([]);
+    }
+  }, [handleSearch, searchImagePath, searchQuery]);
+
   // ── Navigation ────────────────────────────────────────────────────
   const handleNavClick = useCallback((key: string) => {
+    if (searchTempPathRef.current) {
+      AuraSeekApi.deleteFile(searchTempPathRef.current).catch(() => {});
+      searchTempPathRef.current = null;
+      (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
+    }
     setRoute({ view: key });
     setSearchResults([]);
     setSearchQuery("");
     setSearchImagePath(null);
+    setSearchImageName(null);
     if (key === "timeline" || key === "all") loadTimeline();
     if (key === "people") { loadPeople(); loadTimeline(); }
   }, [loadTimeline, loadPeople]);
@@ -607,6 +614,15 @@ function App() {
             onBack={() => setRoute({ view: route.payload?.type === "album" ? "albums" : "people" })}
           />
         );
+      case "favorites":
+        return (
+          <FilteredGalleryView
+            title="Yêu thích"
+            filterType="favorites"
+            photos={photos}
+            onBack={() => setRoute({ view: "timeline" })}
+          />
+        );
       case "favorite_photos":
         return (
           <FilteredGalleryView
@@ -704,7 +720,8 @@ function App() {
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
           searchImagePath={searchImagePath}
-          onSearchImageChange={setSearchImagePath}
+          searchImageName={searchImageName}
+          onSearchImageChange={handleSearchImageChange}
           onSearchSubmit={handleSearchSubmit}
           isSearching={isSearching}
           onFiltersChange={handleFiltersChange}
