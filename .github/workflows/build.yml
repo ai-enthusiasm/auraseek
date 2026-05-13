@@ -117,6 +117,14 @@ jobs:
           "OPENCV_DISABLE_PROBES=pkg_config,cmake,vcpkg_cmake,vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           # So loaders can find DLLs if anything runs OpenCV during the build.
           $binDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # Bundle the same OpenCV runtime the binary was linked against (see
+          # `tauri.windows.conf.json` + `ensure_native_libs`). Without this, the
+          # MSI can ship without e.g. opencv_world4100.dll while the exe expects it.
+          $bundleLibs = Join-Path $ws "src-tauri\libs\windows"
+          New-Item -ItemType Directory -Force -Path $bundleLibs | Out-Null
+          Copy-Item -Path (Join-Path $binDir "opencv*.dll") -Destination $bundleLibs -Force
+          Write-Host "Staged OpenCV runtime DLLs for Tauri bundle:"
+          Get-ChildItem $bundleLibs | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Build Windows app
         run: yarn tauri:build:windows
