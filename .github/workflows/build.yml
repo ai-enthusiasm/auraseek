@@ -80,10 +80,17 @@ jobs:
             Write-Host "OpenCV missing or incomplete under $top — removing and re-extracting into repo root: $ws"
             if (Test-Path $top) { Remove-Item -LiteralPath $top -Recurse -Force }
             $ver = "4.6.0"
-            $setup = Join-Path $env:RUNNER_TEMP "opencv-$ver-windows.exe"
-            $url = "https://github.com/opencv/opencv/releases/download/$ver/opencv-$ver-windows.exe"
+            # OpenCV 4.6 Windows SFX is named vc14_vc15, not opencv-{ver}-windows.exe
+            # (that naming appears on newer releases, e.g. 4.10+).
+            $installer = "opencv-$ver-vc14_vc15.exe"
+            $setup = Join-Path $env:RUNNER_TEMP $installer
+            $url = "https://github.com/opencv/opencv/releases/download/$ver/$installer"
             Write-Host "Downloading $url ..."
             Invoke-WebRequest -Uri $url -OutFile $setup
+            $sig = Get-Content -LiteralPath $setup -AsByteStream -TotalCount 2 -ErrorAction Stop
+            if ($sig.Count -lt 2 -or $sig[0] -ne 0x4D -or $sig[1] -ne 0x5A) {
+              throw "Download is not a valid PE executable (wrong URL / 404 HTML?). URL=$url"
+            }
             # SFX always creates .\opencv\ under the -o directory; -o must be repo root, NOT ...\opencv
             Write-Host "Extracting with -o$ws (creates $top\...)"
             $p = Start-Process -FilePath $setup -ArgumentList "-o$ws","-y" -Wait -PassThru -NoNewWindow
