@@ -20,7 +20,7 @@ export function PhotoCard({
   photo,
   onClick,
   selectionMode     = false,
-  showBbox          = true,
+  showBbox          = false,
   overlayShowFaces  = true,
   overlayShowLabels = true,
   className,
@@ -77,8 +77,9 @@ export function PhotoCard({
       (photo.detectedFaces   && photo.detectedFaces.length   > 0)
     );
 
-  const imgNaturalW = photo.width  || imgRef.current?.naturalWidth  || 0;
-  const imgNaturalH = photo.height || imgRef.current?.naturalHeight || 0;
+  // Prefer browser-decoded dimensions; metadata may be EXIF-rotated on some files.
+  const imgNaturalW = imgRef.current?.naturalWidth || photo.width || 0;
+  const imgNaturalH = imgRef.current?.naturalHeight || photo.height || 0;
 
   return (
     <button
@@ -95,7 +96,8 @@ export function PhotoCard({
 
         {/* ── Video — show static thumbnail image in grid ──────── */}
         {isVideo ? (
-          <img
+          <div className={cn("h-full w-full bg-black", isSelected && selectionMode && "rounded-lg overflow-hidden")}>
+            <img
             ref={imgRef}
             src={photo.thumbnailUrl || photo.url}
             alt="Video"
@@ -106,6 +108,7 @@ export function PhotoCard({
             )}
             draggable={false}
           />
+          </div>
         ) : (
           /* ── Image ──────────────────────────────────────────── */
           <img
@@ -134,7 +137,7 @@ export function PhotoCard({
               objectFit="cover"
               showFaces={overlayShowFaces}
               showLabels={overlayShowLabels}
-              showMasks
+              showMasks={false}
               showBoxes
             />
           </div>

@@ -12,9 +12,10 @@ import { HiddenView } from "@/views/hidden/HiddenView";
 import { FilteredGalleryView } from "@/views/gallery/FilteredGalleryView";
 import { SearchResultsView } from "@/views/search/SearchResultsView";
 import { FirstRunModal } from "@/components/common/FirstRunModal";
+import { EVENT_FORCE_FIRST_RUN_UI, SESSION_POST_DB_RESET } from "@/components/common/SettingsModal";
 import { LandingPage } from "@/views/LandingPage";
 import ModelDownloadScreen, { type ModelDownloadEvent } from "@/components/common/ModelDownloadScreen";
-import { AuraSeekApi, localFileUrl, streamFileUrl, warmStreamPortCache, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
+import { AuraSeekApi, localFileUrl, streamFileUrlSync, warmStreamPortCache, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
 import type { Photo } from "@/types/photo.type";
 
 type AppRoute = {
@@ -35,6 +36,7 @@ function App() {
   const [route, setRoute] = useState<AppRoute>({ view: "timeline" });
   const [searchQuery, setSearchQuery] = useState("");
   const [searchImagePath, setSearchImagePath] = useState<string | null>(null);
+  const [searchImageName, setSearchImageName] = useState<string | null>(null);
   const searchTempPathRef = useRef<string | null>((window as any).__AURASEEK_SEARCH_TMP_PATH__ || null);
   const [activeFilters, setActiveFilters] = useState<ActiveFilters>({});
   const [downloadProgress, setDownloadProgress] = useState<ModelDownloadEvent | null>(null);
@@ -46,21 +48,28 @@ function App() {
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isInitialized, setIsInitialized] = useState(false);
+  /** Chỉ bật khi init / first-run cần chặn timeline — tránh ingest `loadTimeline` nhấp nháy. */
+  const [timelineBlockingLoad, setTimelineBlockingLoad] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
 
   // First-run and source dir
   const [showFirstRun, setShowFirstRun] = useState(false);
+  /** Tăng sau mỗi lần reset DB để FirstRunModal remount (state input sạch). */
+  const [firstRunKey, setFirstRunKey] = useState(0);
   const [sourceDir, setSourceDir] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
 
   // Sync status
   const [syncStatus, setSyncStatus] = useState<SyncStatus | null>(null);
   const syncPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  /** Tăng khi reset DB để bỏ qua kết quả init async cũ (tránh ghi đè FirstRun / sourceDir). */
+  const initGenerationRef = useRef(0);
 
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    const initGenAtStart = initGenerationRef.current;
     const initialize = async () => {
       console.log("[AuraSeek] 🚀 Initializing app...");
 
@@ -75,6 +84,7 @@ function App() {
       try {
         // 1. Check if model files are present
         const modelsReady = await AuraSeekApi.checkModels();
+        if (initGenerationRef.current !== initGenAtStart) return;
 
         if (!modelsReady) {
           setNeedsDownload(true);
@@ -106,27 +116,53 @@ function App() {
             bytes_done: 0, bytes_total: 0,
           });
         }
+        if (initGenerationRef.current !== initGenAtStart) return;
 
         // 2. Normal initialization (engine + DB)
         const msg = await AuraSeekApi.init();
+        if (initGenerationRef.current !== initGenAtStart) return;
         console.log("[AuraSeek] ✅ Engine + DB ready:", msg);
         setInitError(null);
         setDownloadProgress(null); // hide loading screen now that engine is ready
 
         // Warm stream port cache so `streamFileUrlSync()` can serve thumbnails reliably
         await warmStreamPortCache();
+        if (initGenerationRef.current !== initGenAtStart) return;
 
         // Get source_dir from backend
         const dir = await AuraSeekApi.getSourceDir();
-        setSourceDir(dir);
+        if (initGenerationRef.current !== initGenAtStart) return;
 
-        if (!dir) {
-          // First run: show folder picker
+        let forceFirstRunAfterReset = false;
+        try {
+          forceFirstRunAfterReset = sessionStorage.getItem(SESSION_POST_DB_RESET) === "1";
+          if (forceFirstRunAfterReset) {
+            sessionStorage.removeItem(SESSION_POST_DB_RESET);
+          }
+        } catch {
+          /* ignore */
+        }
+
+        if (forceFirstRunAfterReset) {
+          console.log("[AuraSeek] 🔄 Force First Run after DB reset");
+          setSourceDir("");
+          setFirstRunKey((k) => k + 1);
           setShowFirstRun(true);
         } else {
-          // Auto-scan in background
-          await loadTimeline();
-          triggerAutoScan();
+          console.log("[AuraSeek] 📁 Backend source_dir:", dir);
+          setSourceDir(dir || "");
+          if (!dir) {
+            setFirstRunKey((k) => k + 1);
+            setShowFirstRun(true);
+          } else {
+            // Không chặn isInitialized / thread init đến khi resolve hết streamFileUrl (có thể rất lâu).
+            setIsInitialized(true);
+            setHasStarted(true);
+            void loadTimeline({ blocking: true }).then(() => {
+              if (initGenerationRef.current !== initGenAtStart) return;
+              triggerAutoScan();
+            });
+          }
         }
       } catch (err: any) {
         console.warn("[AuraSeek] ⚠️ Init warning:", err);
@@ -146,137 +182,118 @@ function App() {
     try {
       await AuraSeekApi.autoScan();
       setSyncStatus({ state: "syncing", processed: 0, total: 0, message: "Đang đồng bộ dữ liệu..." });
-      // Poll sync status
-      if (syncPollRef.current) clearInterval(syncPollRef.current);
-      syncPollRef.current = setInterval(async () => {
-        try {
-          const st = await AuraSeekApi.getSyncStatus();
-          setSyncStatus(st);
-          if (st.state === "done" || st.state === "error") {
-            if (syncPollRef.current) clearInterval(syncPollRef.current);
-            if (st.state === "done") {
-              await loadTimeline();
-              window.dispatchEvent(new Event("refresh_photos"));
-            }
-          }
-        } catch { }
-      }, 2000);
     } catch (e) {
       console.warn("[AuraSeek] ⚠️ Auto-scan failed:", e);
       setSyncStatus({ state: "error", processed: 0, total: 0, message: String(e) });
     }
   }, []);
 
-  const handleFirstRunComplete = useCallback(async (dir: string) => {
-    setSourceDir(dir);
-    setShowFirstRun(false);
-    await loadTimeline();
-    triggerAutoScan();
-  }, [triggerAutoScan]);
+  /** Đồng bộ UI khi thư viện bị xóa (reset DB từ backend hoặc từ Cài đặt). */
+  const applyLibraryResetToUi = useCallback(() => {
+    initGenerationRef.current += 1;
+    setTimelineBlockingLoad(false);
+    setSourceDir("");
+    setTimelineGroups([]);
+    setPhotos([]);
+    setPeople([]);
+    setSearchResults([]);
+    setSearchImagePath(null);
+    setSearchImageName(null);
+    setRoute({ view: "timeline" });
+    setFirstRunKey((k) => k + 1);
+    setShowFirstRun(true);
+  }, []);
 
-  const loadTimeline = useCallback(async () => {
+  const loadTimeline = useCallback(async (opts?: { blocking?: boolean }) => {
+    const blocking = opts?.blocking === true;
+    if (blocking) setTimelineBlockingLoad(true);
     try {
       console.log("[AuraSeek] 📅 Loading timeline...");
-      
-      let groups = await AuraSeekApi.getTimeline();
-      
-      // MOCK DATA: Lấy tất cả file trong folder assets/image
-      const mockFiles = import.meta.glob('@/assets/image/*.{jpg,jpeg,png,webp,mp4}', { eager: true, import: 'default' }) as Record<string, string>;
-      const mockPhotos: Photo[] = Object.entries(mockFiles).map(([path, url], i) => {
-        const isVideo = path.endsWith('.mp4');
-        return {
-          id: `mock-${i}`,
-          url: url,
-          takenAt: new Date().toISOString(),
-          createdAt: new Date().toISOString(),
-          sizeBytes: 0,
-          width: 800,
-          height: 600,
-          objects: ["mock"],
-          faces: [],
-          faceIds: [],
-          type: isVideo ? "video" : "photo",
-          labels: ["mock"],
-          favorite: false,
-          detectedObjects: [],
-          detectedFaces: [],
-          thumbnailUrl: url,
-          filePath: url,
-        };
-      });
 
-      if (mockPhotos.length > 0) {
-        const mockGroup: TimelineGroup = {
-          label: "Dữ liệu mẫu",
-          year: new Date().getFullYear(),
-          month: new Date().getMonth() + 1,
-          day: new Date().getDate(),
-          items: mockPhotos.map(p => ({
-            media_id: p.id,
-            file_path: p.url, // Path to be able to render it
-            media_type: p.type || "photo",
-            width: p.width,
-            height: p.height,
-            created_at: p.createdAt,
-            objects: p.objects || [],
-            faces: p.faces || [],
-            face_ids: p.faceIds || [],
-            favorite: !!p.favorite,
-            detected_objects: p.detectedObjects || [],
-            detected_faces: p.detectedFaces || [],
-            thumbnail_path: p.thumbnailUrl,
-          }))
-        };
-        // Thêm mock data lên đầu tiên
-        groups = [mockGroup, ...groups];
-      }
+      const groups = await AuraSeekApi.getTimeline();
 
       setTimelineGroups(groups);
       console.log("[AuraSeek] 📅 Timeline loaded:", groups.length, "groups");
 
-      const allPhotos: Photo[] = await Promise.all(groups.flatMap(g =>
-        g.items.map(async item => {
-          if (item.media_id.startsWith('mock-')) {
-            // For mock items, url and thumbnail are already setup above
-            return mockPhotos.find(p => p.id === item.media_id)!;
-          }
+      const isAbsThumbPath = (p: string) =>
+        p.startsWith("/") || /^[A-Za-z]:\\/.test(p);
 
-          // Video thumbnails are absolute paths in the thumbnails cache dir.
-          // Serve them via the local Axum HTTP server to bypass WebKit asset:// restrictions.
+      const itemToPhoto = (item: (typeof groups)[0]["items"][0], thumbnailUrl?: string): Photo => ({
+        id: item.media_id,
+        url: localFileUrl(item.file_path),
+        takenAt: item.created_at || new Date().toISOString(),
+        createdAt: item.created_at || new Date().toISOString(),
+        sizeBytes: 0,
+        width: item.width || 0,
+        height: item.height || 0,
+        objects: item.objects,
+        faces: item.faces,
+        faceIds: item.face_ids,
+        type: item.media_type as "photo" | "video",
+        labels: item.objects,
+        favorite: item.favorite,
+        detectedObjects: item.detected_objects,
+        detectedFaces: item.detected_faces,
+        thumbnailUrl,
+        filePath: item.file_path,
+      });
+
+      // Pha 1 & duy nhất: đồng bộ toàn bộ thumbnail, ngăn treo RAM/IPC do Promise.all với thư viện lớn
+      const allPhotos: Photo[] = groups.flatMap((g) =>
+        g.items.map((item) => {
           let thumbnailUrl: string | undefined;
           if (item.thumbnail_path) {
-            if (item.thumbnail_path.startsWith("/") || item.thumbnail_path.match(/^[A-Za-z]:\\/)) {
-              thumbnailUrl = await streamFileUrl(item.thumbnail_path);
+            if (isAbsThumbPath(item.thumbnail_path)) {
+              thumbnailUrl = streamFileUrlSync(item.thumbnail_path);
             } else {
               thumbnailUrl = localFileUrl(item.thumbnail_path);
             }
           }
-          return {
-            id: item.media_id,
-            url: localFileUrl(item.file_path),
-            takenAt: item.created_at || new Date().toISOString(),
-            createdAt: item.created_at || new Date().toISOString(),
-            sizeBytes: 0,
-            width: item.width || 0,
-            height: item.height || 0,
-            objects: item.objects,
-            faces: item.faces,
-            faceIds: item.face_ids,
-            type: item.media_type as "photo" | "video",
-            labels: item.objects,
-            favorite: item.favorite,
-            detectedObjects: item.detected_objects,
-            detectedFaces: item.detected_faces,
-            thumbnailUrl,
-            filePath: item.file_path,
-          };
+          return itemToPhoto(item, thumbnailUrl);
         })
-      ));
+      );
       setPhotos(allPhotos);
     } catch (err) {
       console.warn("[AuraSeek] ⚠️ Timeline load failed:", err);
+    } finally {
+      if (blocking) setTimelineBlockingLoad(false);
     }
   }, []);
+
+  const handleFirstRunComplete = useCallback(async (dir: string) => {
+    setSourceDir(dir);
+    setShowFirstRun(false);
+    setHasStarted(true); // Direct access after setup
+    await loadTimeline({ blocking: true });
+    triggerAutoScan();
+  }, [loadTimeline, triggerAutoScan]);
+
+  // Global perpetual SyncStatus poller (essential for fs_watcher background events)
+  useEffect(() => {
+    if (!isInitialized) return;
+    let lastState = syncStatus?.state;
+    const iv = setInterval(async () => {
+      try {
+        const st = await AuraSeekApi.getSyncStatus();
+        setSyncStatus(st);
+        if (st.state === "done" && lastState === "syncing") {
+          // Transitioned from syncing to done -> refreshing UI automatically
+          await loadTimeline();
+          window.dispatchEvent(new Event("refresh_photos"));
+        }
+        lastState = st.state;
+      } catch { }
+    }, 2000);
+    return () => clearInterval(iv);
+  }, [isInitialized, loadTimeline, syncStatus?.state]);
+
+  const handleReload = useCallback(() => {
+    if (syncStatus && syncStatus.state === "error") {
+      setSyncStatus({ state: "idle", processed: 0, total: 0, message: "" });
+    }
+    loadTimeline();
+    triggerAutoScan();
+  }, [loadTimeline, triggerAutoScan, syncStatus]);
 
   const loadPeople = useCallback(async () => {
     try {
@@ -348,12 +365,15 @@ function App() {
           const ext = mimeToExt(f.type);
           const s = await AuraSeekApi.ingestImageData(b64, ext);
           newCount += s.newly_added;
-        } catch (e) { console.warn("[AuraSeek] ingestImageData failed:", e); }
+        } catch (e) { console.warn("[AuraSeek] ingest blob failed:", e); }
       }
 
       if (newCount > 0) {
-        console.log("[AuraSeek] ✅ Ingested", newCount, "new images — refreshing timeline");
+        console.log(`[AuraSeek] ✅ Added ${newCount} new files.`);
         await loadTimeline();
+        window.dispatchEvent(new Event("refresh_photos"));
+      } else {
+        console.log("[AuraSeek] ⚠️ No new files added or all were duplicates.");
       }
     };
 
@@ -400,29 +420,35 @@ function App() {
   }, [loadTimeline]);
 
   // ── Search ────────────────────────────────────────────────────────
-  const handleSearch = useCallback(async (text: string, imagePath?: string | null) => {
-    const hasFilters = activeFilters && Object.values(activeFilters).some(v => v !== undefined);
+  const handleSearch = useCallback(async (
+    text: string,
+    imagePath?: string | null,
+    filterOverride?: ActiveFilters,
+  ) => {
+    const filtersSource = filterOverride ?? activeFilters;
+    const hasFilters = filtersSource && Object.values(filtersSource).some(v => v !== undefined);
     if (!text.trim() && !imagePath && !hasFilters) {
       setSearchResults([]);
       return;
     }
     setIsSearching(true);
     const filters: ApiFilters = {
-      object: activeFilters.object,
-      face: activeFilters.face,
-      month: activeFilters.month,
-      year: activeFilters.year,
-      media_type: activeFilters.mediaType,
+      object: filtersSource.object,
+      face: filtersSource.face,
+      month: filtersSource.month,
+      year: filtersSource.year,
+      media_type: filtersSource.mediaType,
     };
     try {
       let results: SearchResult[];
+      const queryText = text.trim();
       console.log("[AuraSeek] 🔍 Searching:", { text, imagePath, filters });
-      if (text && imagePath) {
-        results = await AuraSeekApi.searchCombined(text, imagePath, filters);
+      if (queryText && imagePath) {
+        results = await AuraSeekApi.searchCombined(queryText, imagePath, filters);
       } else if (imagePath) {
         results = await AuraSeekApi.searchImage(imagePath, filters);
-      } else if (text.trim()) {
-        results = await AuraSeekApi.searchText(text, filters);
+      } else if (queryText) {
+        results = await AuraSeekApi.searchText(queryText, filters);
       } else if (filters.object) {
         results = await AuraSeekApi.searchObject(filters.object, filters);
       } else if (filters.face) {
@@ -443,6 +469,8 @@ function App() {
       if (searchTempPathRef.current) {
         AuraSeekApi.deleteFile(searchTempPathRef.current).catch(() => {});
         searchTempPathRef.current = null;
+        (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
+        setSearchImagePath(null);
       }
       setIsSearching(false);
     }
@@ -452,22 +480,36 @@ function App() {
     handleSearch(searchQuery, searchImagePath);
   }, [searchQuery, searchImagePath, handleSearch]);
 
-  const handleFiltersChange = useCallback((filters: ActiveFilters) => {
-    setActiveFilters(filters);
-    const hasFilters = Object.values(filters).some(v => v !== undefined);
-    if (hasFilters) {
-      setTimeout(() => {
-        document.getElementById("search-submit-btn")?.click();
-      }, 100);
+  const handleSearchImageChange = useCallback((path: string | null, name?: string | null) => {
+    searchTempPathRef.current = path;
+    setSearchImagePath(path);
+    if (name !== undefined) {
+      setSearchImageName(name);
     }
   }, []);
 
+  const handleFiltersChange = useCallback((filters: ActiveFilters) => {
+    setActiveFilters(filters);
+    const hasFilters = Object.values(filters).some(v => v !== undefined);
+    if (hasFilters || searchQuery.trim() || searchImagePath) {
+      handleSearch(searchQuery, searchImagePath, filters);
+    } else {
+      setSearchResults([]);
+    }
+  }, [handleSearch, searchImagePath, searchQuery]);
+
   // ── Navigation ────────────────────────────────────────────────────
   const handleNavClick = useCallback((key: string) => {
+    if (searchTempPathRef.current) {
+      AuraSeekApi.deleteFile(searchTempPathRef.current).catch(() => {});
+      searchTempPathRef.current = null;
+      (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
+    }
     setRoute({ view: key });
     setSearchResults([]);
     setSearchQuery("");
     setSearchImagePath(null);
+    setSearchImageName(null);
     if (key === "timeline" || key === "all") loadTimeline();
     if (key === "people") { loadPeople(); loadTimeline(); }
   }, [loadTimeline, loadPeople]);
@@ -503,6 +545,32 @@ function App() {
       unlistenPromise.then(unlisten => unlisten()).catch(() => {});
     };
   }, [loadTimeline]);
+
+  // Reset DB có thể phát từ Rust; tách effect (không phụ thuộc loadTimeline) để tránh race đăng ký/hủy listen.
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    listen("database-reset", () => {
+      console.log("[AuraSeek] 🧹 Database reset event received.");
+      if (!cancelled) applyLibraryResetToUi();
+    })
+      .then((fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, [applyLibraryResetToUi]);
+
+  // Force-first-run event from reset flow (used when backend reset is slow/hangs).
+  useEffect(() => {
+    const forceFirstRun = () => applyLibraryResetToUi();
+    window.addEventListener(EVENT_FORCE_FIRST_RUN_UI, forceFirstRun);
+    return () => window.removeEventListener(EVENT_FORCE_FIRST_RUN_UI, forceFirstRun);
+  }, [applyLibraryResetToUi]);
 
   // ── Render ────────────────────────────────────────────────────────
   const renderView = () => {
@@ -546,6 +614,15 @@ function App() {
             onBack={() => setRoute({ view: route.payload?.type === "album" ? "albums" : "people" })}
           />
         );
+      case "favorites":
+        return (
+          <FilteredGalleryView
+            title="Yêu thích"
+            filterType="favorites"
+            photos={photos}
+            onBack={() => setRoute({ view: "timeline" })}
+          />
+        );
       case "favorite_photos":
         return (
           <FilteredGalleryView
@@ -572,7 +649,7 @@ function App() {
             timelineGroups={timelineGroups}
             photos={photos}
             searchQuery={searchQuery}
-            isLoading={!isInitialized}
+            isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
             mediaType="video"
           />
@@ -587,7 +664,7 @@ function App() {
             timelineGroups={timelineGroups}
             photos={photos}
             searchQuery={searchQuery}
-            isLoading={!isInitialized}
+            isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
           />
         );
@@ -598,7 +675,7 @@ function App() {
             timelineGroups={timelineGroups}
             photos={photos}
             searchQuery={searchQuery}
-            isLoading={!isInitialized}
+            isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
             mediaType="photo"
           />
@@ -606,14 +683,18 @@ function App() {
     }
   };
 
-  if (!hasStarted) {
+  // If it's the first run, we skip the landing page to show the setup modal immediately
+  if (!hasStarted && !showFirstRun) {
     return <LandingPage onStart={() => setHasStarted(true)} />;
   }
 
   return (
     <SelectionProvider>
       <TooltipProvider>
-        {showFirstRun && <FirstRunModal onComplete={handleFirstRunComplete} />}
+        {/* First-run Modal (Logic from 5eacb87) */}
+        {showFirstRun && (
+          <FirstRunModal key={firstRunKey} onComplete={handleFirstRunComplete} />
+        )}
 
         {/* Global drag-over indicator */}
         {isDragOver && (
@@ -630,6 +711,7 @@ function App() {
           <ModelDownloadScreen event={downloadProgress} />
         )}
 
+        {/* New Layout Structure (UI from current) */}
         <NewLayout
           activeKey={route.view}
           onNavClick={handleNavClick}
@@ -638,7 +720,8 @@ function App() {
           searchQuery={searchQuery}
           onSearchQueryChange={setSearchQuery}
           searchImagePath={searchImagePath}
-          onSearchImageChange={setSearchImagePath}
+          searchImageName={searchImageName}
+          onSearchImageChange={handleSearchImageChange}
           onSearchSubmit={handleSearchSubmit}
           isSearching={isSearching}
           onFiltersChange={handleFiltersChange}
@@ -648,6 +731,7 @@ function App() {
           onSelectionModeChange={setSelectionMode}
           syncStatus={syncStatus}
           totalImages={photos.length}
+          onReload={handleReload}
         >
           {renderView()}
         </NewLayout>

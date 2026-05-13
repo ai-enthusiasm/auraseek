@@ -13,6 +13,7 @@ import { createPortal } from "react-dom";
 import { AuraSeekApi } from "@/lib/api";
 import { FullScreenTopBar } from "./FullScreenTopBar";
 import { openPath } from "@tauri-apps/plugin-opener";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 /** Ứng dụng mở video ngoài (Linux/macOS/Windows). */
 const EXTERNAL_VIDEO_APP = "cine";
@@ -33,11 +34,15 @@ export function FullScreenVideoViewer({
     const [isSharing, setIsSharing] = useState(false);
     const [videoError, setVideoError] = useState(false);
     const [streamUrl, setStreamUrl] = useState<string | null>(null);
+    const [isHardDeleteOpen, setIsHardDeleteOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+    const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null);
 
     useEffect(() => {
         setIsFavorite(photo.favorite || false);
         setVideoError(false);
         setStreamUrl(null);
+        setVideoAspectRatio(null);
 
         let active = true;
 
@@ -61,6 +66,22 @@ export function FullScreenVideoViewer({
             active = false;
         };
     }, [photo.id, photo.filePath, photo.favorite]);
+
+    useEffect(() => {
+        if (!photo.thumbnailUrl) return;
+
+        let active = true;
+        const img = new Image();
+        img.onload = () => {
+            if (!active || img.naturalWidth <= 0 || img.naturalHeight <= 0) return;
+            setVideoAspectRatio(img.naturalWidth / img.naturalHeight);
+        };
+        img.src = photo.thumbnailUrl;
+
+        return () => {
+            active = false;
+        };
+    }, [photo.thumbnailUrl]);
 
     const handleFavorite = async () => {
         try {
@@ -97,6 +118,20 @@ export function FullScreenVideoViewer({
             onClose();
         } catch (e) {
             console.error("Move to trash failed", e);
+        }
+    };
+
+    const handleHardDelete = async () => {
+        try {
+            setIsDeleting(true);
+            await AuraSeekApi.hardDeleteTrashItem(photo.id);
+            window.dispatchEvent(new Event("refresh_photos"));
+            onClose();
+        } catch (e) {
+            console.error("Hard delete failed", e);
+        } finally {
+            setIsDeleting(false);
+            setIsHardDeleteOpen(false);
         }
     };
 
@@ -141,13 +176,14 @@ export function FullScreenVideoViewer({
 
     return createPortal(
         <div className="fixed inset-0 z-[9999] flex bg-background w-full h-full text-foreground">
-            <div className="relative flex-1 flex flex-col overflow-hidden bg-black transition-all">
+            <div className="relative min-w-0 flex-1 flex flex-col overflow-hidden bg-black transition-all">
                 <FullScreenTopBar
                     hasOverlays={false}
                     showBbox={false}
                     onToggleBbox={() => { }}
                     showMask={false}
                     onToggleMask={() => { }}
+                    enableMaskToggle={false}
                     scale={1}
                     onZoomClick={() => { }}
                     isTrashMode={isTrashMode}
@@ -159,6 +195,7 @@ export function FullScreenVideoViewer({
                     onRestoreFromTrash={handleRestoreFromTrash}
                     onUnhide={handleUnhide}
                     onMoveToTrash={handleMoveToTrash}
+                    onHardDelete={isTrashMode ? () => setIsHardDeleteOpen(true) : undefined}
                     isSharing={isSharing}
                     showInfo={showInfo}
                     onToggleInfo={() => setShowInfo((p) => !p)}
@@ -166,7 +203,7 @@ export function FullScreenVideoViewer({
                     isVideo
                 />
 
-                <div className="flex-1 flex items-center justify-center p-4 bg-black">
+                <div className="min-h-0 flex-1 flex items-center justify-center p-4 bg-black">
                     {videoError ? (
                         <div className="flex flex-col items-center justify-center gap-4 text-center max-w-md">
                             <img
@@ -193,20 +230,36 @@ export function FullScreenVideoViewer({
                             <span className="text-slate-400 animate-pulse text-sm font-medium">Đang kết nối luồng phát...</span>
                         </div>
                     ) : (
-                        <video
-                            src={streamUrl}
-                            poster={photo.thumbnailUrl}
-                            controls
-                            autoPlay
-                            className="max-w-full max-h-full rounded-xl bg-black shadow-2xl"
-                            onError={(e) => {
-                                const err = (e.target as HTMLVideoElement).error;
-                                console.error("Video playback error:", err);
-                                setVideoError(true);
+                        <div
+                            className="flex max-h-full max-w-full items-center justify-center overflow-hidden rounded-xl bg-black shadow-2xl"
+                            style={{
+                                aspectRatio: videoAspectRatio ?? undefined,
+                                width: videoAspectRatio && videoAspectRatio < 1 ? "auto" : "100%",
+                                height: videoAspectRatio && videoAspectRatio < 1 ? "100%" : "auto",
                             }}
                         >
-                            Trình duyệt không hỗ trợ định dạng này.
-                        </video>
+                            <video
+                                src={streamUrl}
+                                poster={photo.thumbnailUrl}
+                                controls
+                                autoPlay
+                                className="h-full w-full bg-black object-contain"
+                                onLoadedMetadata={(e) => {
+                                    if (videoAspectRatio) return;
+                                    const video = e.currentTarget;
+                                    if (video.videoWidth > 0 && video.videoHeight > 0) {
+                                        setVideoAspectRatio(video.videoWidth / video.videoHeight);
+                                    }
+                                }}
+                                onError={(e) => {
+                                    const err = (e.target as HTMLVideoElement).error;
+                                    console.error("Video playback error:", err);
+                                    setVideoError(true);
+                                }}
+                            >
+                                Trình duyệt không hỗ trợ định dạng này.
+                            </video>
+                        </div>
                     )}
                 </div>
             </div>
@@ -221,6 +274,16 @@ export function FullScreenVideoViewer({
                     </div>
                 </div>
             )}
+            <ConfirmDialog
+                isOpen={isHardDeleteOpen}
+                title="Xóa vĩnh viễn video"
+                description="Bạn có chắc muốn xóa video này khỏi ổ đĩa không? Hành động này sẽ không thể hoàn tác."
+                confirmText="Xóa vĩnh viễn"
+                isDestructive
+                isLoading={isDeleting}
+                onConfirm={handleHardDelete}
+                onCancel={() => setIsHardDeleteOpen(false)}
+            />
         </div>,
         document.body
     );

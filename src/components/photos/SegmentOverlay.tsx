@@ -29,7 +29,7 @@ export interface SegmentOverlayProps {
   objectFit?: "cover" | "contain";
   /** Whether to draw face bbox rectangles (default: true) */
   showFaces?: boolean;
-  /** Whether to draw object/face labels + confidence (default: true) */
+  /** Whether to draw object/face labels + confidence (default: false) */
   showLabels?: boolean;
   /** Current zoom/view scale — use this to adjust stroke/font size to stay crisp */
   viewScale?: number;
@@ -72,9 +72,10 @@ export function SegmentOverlay({
   displayH,
   objectFit  = "cover",
   showFaces  = true,
-  showLabels = true,
+  showLabels = false,
   viewScale  = 1,
-  showMasks  = true,
+  // Masks (RLE) are expensive and can obscure content; default OFF.
+  showMasks  = false,
   showBoxes  = true,
   activeObjectIndex = null,
   onlyActive = false,

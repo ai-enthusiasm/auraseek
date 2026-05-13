@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import { AuraSeekApi } from "@/lib/api";
 import { SegmentOverlay } from "../photos/SegmentOverlay";
 import { FullScreenTopBar } from "./FullScreenTopBar";
+import { ConfirmDialog } from "../ui/ConfirmDialog";
 
 export function FullScreenPhotoViewer({
     photo,
@@ -23,11 +24,13 @@ export function FullScreenPhotoViewer({
         const saved = localStorage.getItem(`auraseek_bbox_${photo.id}`);
         return saved === "true";
     });
-  // Mask mặc định tắt để không gây bất ngờ; người dùng bật bằng icon cọ vẽ.
-  const [showMask, setShowMask] = useState(false);
+  // Mask (RLE) disabled globally.
+  const showMask = false;
   const [activeObjectIndex, setActiveObjectIndex] = useState<number | null>(null);
     const [isFavorite, setIsFavorite] = useState(photo.favorite || false);
     const [isSharing, setIsSharing] = useState(false);
+    const [isHardDeleteOpen, setIsHardDeleteOpen] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
 
     useEffect(() => {
         const saved = localStorage.getItem(`auraseek_bbox_${photo.id}`);
@@ -63,8 +66,8 @@ export function FullScreenPhotoViewer({
     let renderedW = dimensions.width - 32;
     let renderedH = dimensions.height - 32;
     if (imgRef.current && dimensions.width && dimensions.height) {
-        const natW = photo.width || imgRef.current.naturalWidth || 1;
-        const natH = photo.height || imgRef.current.naturalHeight || 1;
+        const natW = imgRef.current.naturalWidth || photo.width || 1;
+        const natH = imgRef.current.naturalHeight || photo.height || 1;
         const imgAspect = natW / natH;
         const containerAspect = (dimensions.width - 32) / (dimensions.height - 32);
         if (imgAspect > containerAspect) {
@@ -204,8 +207,8 @@ export function FullScreenPhotoViewer({
     const py = e.clientY - imgBox.top;
     if (px < 0 || py < 0 || px > imgBox.width || py > imgBox.height) return;
 
-    const natW = photo.width || imgRef.current.naturalWidth || 1;
-    const natH = photo.height || imgRef.current.naturalHeight || 1;
+    const natW = imgRef.current.naturalWidth || photo.width || 1;
+    const natH = imgRef.current.naturalHeight || photo.height || 1;
     const scaleX = imgBox.width / natW;
     const scaleY = imgBox.height / natH;
     const ox = px / scaleX;
@@ -267,6 +270,20 @@ export function FullScreenPhotoViewer({
         }
     };
 
+    const handleHardDelete = async () => {
+        try {
+            setIsDeleting(true);
+            await AuraSeekApi.hardDeleteTrashItem(photo.id);
+            window.dispatchEvent(new Event("refresh_photos"));
+            onClose();
+        } catch (e) {
+            console.error("Hard delete failed", e);
+        } finally {
+            setIsDeleting(false);
+            setIsHardDeleteOpen(false);
+        }
+    };
+
     const handleRestoreFromTrash = async () => {
         try {
             await AuraSeekApi.restoreFromTrash(photo.id);
@@ -303,9 +320,7 @@ export function FullScreenPhotoViewer({
         localStorage.setItem(`auraseek_bbox_${photo.id}`, newVal.toString());
     };
 
-  const handleToggleMask = () => {
-    setShowMask((prev) => !prev);
-  };
+  const handleToggleMask = () => {};
 
     return createPortal(
         <div className="fixed inset-0 z-[9999] flex bg-background w-full h-full text-foreground">
@@ -316,6 +331,7 @@ export function FullScreenPhotoViewer({
                     onToggleBbox={handleToggleBbox}
                     showMask={showMask}
                     onToggleMask={handleToggleMask}
+                    enableMaskToggle={false}
                     scale={scale}
                     onZoomClick={handleDoubleClick}
                     isTrashMode={isTrashMode}
@@ -327,6 +343,7 @@ export function FullScreenPhotoViewer({
                     onRestoreFromTrash={handleRestoreFromTrash}
                     onUnhide={handleUnhide}
                     onMoveToTrash={handleMoveToTrash}
+                    onHardDelete={isTrashMode ? () => setIsHardDeleteOpen(true) : undefined}
                     isSharing={isSharing}
                     showInfo={showInfo}
                     onToggleInfo={() => setShowInfo((p) => !p)}
@@ -374,18 +391,18 @@ export function FullScreenPhotoViewer({
                                         });
                                     }}
                                 />
-                                {(showBbox || showMask || activeObjectIndex != null) && hasOverlays && renderedW > 0 && (
+                                {(showBbox || activeObjectIndex != null) && hasOverlays && renderedW > 0 && (
                                     <SegmentOverlay
                                         detectedObjects={photo.detectedObjects}
                                         detectedFaces={photo.detectedFaces}
-                                        imgNaturalW={photo.width || imgRef.current?.naturalWidth || 0}
-                                        imgNaturalH={photo.height || imgRef.current?.naturalHeight || 0}
+                                        imgNaturalW={imgRef.current?.naturalWidth || photo.width || 0}
+                                        imgNaturalH={imgRef.current?.naturalHeight || photo.height || 0}
                                         displayW={renderedW}
                                         displayH={renderedH}
                                         objectFit="contain"
                                         showFaces={showBbox}
-                                        showLabels
-                                        showMasks={showMask || activeObjectIndex != null}
+                                        showLabels={false}
+                                        showMasks={false}
                                         showBoxes={showBbox}
                                         viewScale={scale}
                                         activeObjectIndex={activeObjectIndex}
@@ -456,6 +473,16 @@ export function FullScreenPhotoViewer({
                     </div>
                 </div>
             )}
+            <ConfirmDialog
+                isOpen={isHardDeleteOpen}
+                title="Xóa vĩnh viễn ảnh"
+                description="Bạn có chắc muốn xóa ảnh này khỏi ổ đĩa không? Hành động này sẽ không thể hoàn tác."
+                confirmText="Xóa vĩnh viễn"
+                isDestructive
+                isLoading={isDeleting}
+                onConfirm={handleHardDelete}
+                onCancel={() => setIsHardDeleteOpen(false)}
+            />
         </div>,
         document.body
     );

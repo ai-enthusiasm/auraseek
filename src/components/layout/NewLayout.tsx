@@ -1,8 +1,8 @@
 import React, { useRef, useState, useCallback, useEffect } from "react";
 import {
   Search, Image as ImageIcon, Upload, X, History, Filter,
-  RefreshCw, CheckCircle2, AlertCircle, Film, Library, Users,
-  CopySlash, Trash2, Grid3X3, Settings, LayoutGrid,
+  RefreshCw, CheckCircle2, Film, Library, Users,
+  CopySlash, Trash2, Grid3X3, Settings, LayoutGrid, AlertCircle, Loader2
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useSelection } from "@/contexts/SelectionContext";
@@ -17,7 +17,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
@@ -27,19 +26,22 @@ interface NewLayoutProps {
   onNavClick?: (key: string) => void;
   sourceDir?: string;
   onSourceDirChange?: (dir: string) => void;
-  totalImages?: number;
   searchQuery?: string;
   onSearchQueryChange?: (q: string) => void;
   searchImagePath?: string | null;
-  onSearchImageChange?: (path: string | null) => void;
+  searchImageName?: string | null;
+  onSearchImageChange?: (path: string | null, name?: string | null) => void;
   onSearchSubmit?: () => void;
-  isSearching?: boolean;
   onFiltersChange?: (filters: ActiveFilters) => void;
   activeFilters?: ActiveFilters;
+  syncStatus?: SyncStatus | null;
+  onReload?: () => void;
+  // Previously unused but passed props
+  isSearching?: boolean;
   initError?: string | null;
   selectionMode?: boolean;
   onSelectionModeChange?: (mode: boolean) => void;
-  syncStatus?: SyncStatus | null;
+  totalImages?: number;
 }
 
 export function NewLayout({
@@ -48,19 +50,19 @@ export function NewLayout({
   onNavClick,
   sourceDir = "",
   onSourceDirChange,
-  totalImages = 0,
   searchQuery = "",
   onSearchQueryChange,
   searchImagePath,
+  searchImageName,
   onSearchImageChange,
   onSearchSubmit,
-  isSearching = false,
   onFiltersChange,
   activeFilters,
-  initError,
-  selectionMode = false,
-  onSelectionModeChange,
   syncStatus,
+  onReload,
+  isSearching = false,
+  initError,
+  totalImages = 0,
 }: NewLayoutProps) {
   const { selectedIds, clearSelection } = useSelection();
   const [showFilters, setShowFilters] = useState(false);
@@ -116,26 +118,39 @@ export function NewLayout({
       const bytes = new Uint8Array(arrayBuffer);
       const ext = file.name.split(".").pop() || "jpg";
       const tmpPath = await AuraSeekApi.saveSearchImageTmp(Array.from(bytes), ext);
-      onSearchImageChange?.(tmpPath);
+      const query = searchInputRef.current?.value ?? searchQuery ?? "";
+      if (searchImagePath && searchImagePath !== tmpPath) {
+        await AuraSeekApi.deleteFile(searchImagePath).catch(() => {});
+      }
+      onSearchQueryChange?.(query);
+      onSearchImageChange?.(tmpPath, file.name);
       (window as any).__AURASEEK_SEARCH_TMP_PATH__ = tmpPath;
+      searchInputRef.current?.focus();
     } catch (err) {
       console.error("[AuraSeek] ❌ Error saving temp search image:", err);
+    } finally {
+      e.target.value = "";
     }
   };
 
   const clearSearch = () => {
     if (searchInputRef.current) searchInputRef.current.value = "";
     onSearchQueryChange?.("");
-    onSearchImageChange?.(null);
+    if (searchImagePath) {
+      AuraSeekApi.deleteFile(searchImagePath).catch(() => {});
+    }
+    (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
+    onSearchImageChange?.(null, null);
   };
 
-  const imageFileName = searchImagePath ? searchImagePath.split(/[/\\]/).pop() || searchImagePath : null;
   const currentInputValue = searchInputRef.current?.value || searchQuery || "";
+  const imageFileName = searchImageName || (searchImagePath ? searchImagePath.split(/[/\\]/).pop() || searchImagePath : null);
 
-  // Menu items config (Floating charcoal style)
+  // Menu items config
   const menuItems = [
     { title: "Tất cả", icon: LayoutGrid, key: "all" },
     { title: "Ảnh", icon: ImageIcon, key: "timeline" },
+    { title: "Người", icon: Users, key: "people" },
     { title: "Video", icon: Film, key: "videos" },
     { title: "Bộ sưu tập", icon: Library, key: "albums" },
     { title: "Thùng rác", icon: Trash2, key: "trash" },
@@ -175,21 +190,41 @@ export function NewLayout({
             </div>
 
             {/* Typography: A U R A S E E K (Premium kerning) */}
-            <h1 className="text-white font-['Montserrat'] text-[50px] tracking-[1.2em] uppercase font-light translate-x-[0.1em]"
-                style={{ textShadow: "0 0 20px rgba(255,255,255,0.4)" }}>
-              AURASEEK
-            </h1>
+            <div className="flex flex-col">
+              <h1 className="text-white font-['Montserrat'] text-[50px] tracking-[1.2em] uppercase font-light translate-x-[0.1em]"
+                  style={{ textShadow: "0 0 20px rgba(255,255,255,0.4)" }}>
+                AURASEEK
+              </h1>
+              {totalImages > 0 && (
+                <p className="text-white/30 text-[10px] tracking-[0.4em] uppercase font-bold mt-[-10px] ml-1">
+                  Kho lưu trữ: {totalImages} tệp tin
+                </p>
+              )}
+            </div>
           </div>
 
           {/* Sync Status Overlay (Right) */}
-          <div className="ml-auto hidden sm:flex items-center gap-4 text-[10px] font-bold tracking-widest text-white/50 uppercase">
+          <div className="ml-auto hidden sm:flex items-center gap-6 text-[10px] font-bold tracking-widest text-white/50 uppercase">
+             
+             {/* Application Reload Button */}
+             {onReload && (
+                <button 
+                   onClick={onReload}
+                   className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/5 hover:border-white/10 transition-all text-white/40 hover:text-white group"
+                   title="Tải lại ứng dụng"
+                >
+                   <RefreshCw className="w-3 h-3 group-hover:rotate-180 transition-transform duration-500" />
+                   <span>Làm mới</span>
+                </button>
+             )}
+
              {syncStatus?.state === "syncing" && (
-                <div className="flex items-center gap-2 text-blue-400">
+                <div className="flex items-center gap-2 text-blue-400 px-3 py-1.5 rounded-full bg-blue-500/5 border border-blue-500/10">
                    <RefreshCw className="w-3 h-3 animate-spin" /> <span>Đang đồng bộ</span>
                 </div>
              )}
              {syncStatus?.state === "done" && (
-                <div className="flex items-center gap-2 text-emerald-400">
+                <div className="flex items-center gap-2 text-emerald-400 px-3 py-1.5 rounded-full bg-emerald-500/5 border border-emerald-500/10">
                    <CheckCircle2 className="w-3 h-3" /> <span>Hệ thống sẵn sàng</span>
                 </div>
              )}
@@ -225,130 +260,149 @@ export function NewLayout({
 
       {/* ═══════════════ SEARCH & ACTIONS ═══════════════ */}
       <div className="relative z-20 w-full flex justify-center px-8 py-4 bg-white">
-        <div className="w-full max-w-4xl flex items-center gap-4">
+        <div className="w-full max-w-4xl flex flex-col gap-4">
           
-          {/* Centered Pill Search Bar */}
-          <div className="flex-1 relative group">
-            <div className={cn(
-              "flex items-center rounded-full border transition-all duration-500 px-5 cursor-text",
-              searchFocused
-                ? "bg-gray-200 border-primary/40 ring-[6px] ring-primary/10 shadow-[0_12px_40px_rgba(0,0,0,0.1)] scale-[1.01]"
-                : "bg-gray-200 border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5"
-            )}
-            onClick={() => searchInputRef.current?.focus()}>
-              <Search className={cn("w-5 h-5 transition-colors duration-300", searchFocused ? "text-primary" : "text-zinc-400 group-hover:text-primary/70")} />
-              
-              <input
-                ref={searchInputRef}
-                type="text"
-                id="search-input"
-                defaultValue={searchQuery}
-                onInput={handleInput}
-                onCompositionStart={handleCompositionStart}
-                onCompositionEnd={handleCompositionEnd}
-                onFocus={handleFocus}
-                onBlur={() => { syncValue(); setTimeout(() => setSearchFocused(false), 200); }}
-                onKeyDown={handleKeyDown}
-                placeholder="Tìm kiếm..."
-                className="flex-1 h-14 bg-transparent border-none text-black placeholder-zinc-400 px-4 font-['Roboto'] text-lg outline-none"
-              />
+          {initError && (
+             <div className="w-full flex items-center gap-3 px-6 py-4 rounded-[24px] bg-red-500/5 border border-red-500/10 text-red-500 animate-in fade-in slide-in-from-top-2">
+                <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                <p className="text-sm font-medium">Lỗi khởi tạo: {initError}</p>
+             </div>
+          )}
 
-              <div className="flex items-center gap-2">
-                {(currentInputValue || searchImagePath) && (
-                  <button onClick={clearSearch} className="rounded-full p-2 text-zinc-400 hover:text-zinc-900 transition">
-                    <X className="w-4 h-4" />
-                  </button>
+          <div className="w-full flex items-center gap-4">
+            {/* Centered Pill Search Bar */}
+            <div className="flex-1 relative group">
+              <div className={cn(
+                "flex items-center rounded-full border transition-all duration-500 px-5 cursor-text",
+                searchFocused
+                  ? "bg-gray-200 border-primary/40 ring-[6px] ring-primary/10 shadow-[0_12px_40px_rgba(0,0,0,0.1)] scale-[1.01]"
+                  : "bg-gray-200 border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5"
+              )}
+              onClick={() => searchInputRef.current?.focus()}>
+                {isSearching ? (
+                  <Loader2 className="w-5 h-5 animate-spin text-primary" />
+                ) : (
+                  <Search className={cn("w-5 h-5 transition-colors duration-300", searchFocused ? "text-primary" : "text-zinc-400 group-hover:text-primary/70")} />
                 )}
-                <button onClick={() => fileInputRef.current?.click()} className="rounded-full p-2 text-zinc-400 hover:text-primary transition" title="Tìm kiếm theo hình ảnh">
-                  <Upload className="w-5 h-5" />
-                </button>
-                <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
-                <Button
-                  variant="ghost" 
-                  size="icon"
-                  onClick={() => setShowFilters(true)}
-                  className={cn("rounded-full w-10 h-10 transition-colors relative", hasActiveFilters ? "text-primary bg-primary/10" : "text-zinc-400 hover:text-primary hover:bg-zinc-100/50")}
-                >
-                  <Filter className="w-5 h-5" />
-                  {hasActiveFilters && <div className="absolute top-2 right-2 w-2 h-2 bg-primary rounded-full shadow-[0_0_10px_rgba(var(--primary),0.5)]" />}
-                </Button>
+                
+                <input
+                  ref={searchInputRef}
+                  type="text"
+                  id="search-input"
+                  defaultValue={searchQuery}
+                  onInput={handleInput}
+                  onCompositionStart={handleCompositionStart}
+                  onCompositionEnd={handleCompositionEnd}
+                  onFocus={handleFocus}
+                  onBlur={() => { syncValue(); setTimeout(() => setSearchFocused(false), 200); }}
+                  onKeyDown={handleKeyDown}
+                  placeholder={isSearching ? "Đang tìm kiếm..." : "Tìm kiếm..."}
+                  className="flex-1 h-14 bg-transparent border-none text-black placeholder-zinc-400 px-4 font-['Roboto'] text-lg outline-none"
+                />
+
+                <div className="flex items-center gap-2">
+                  {imageFileName && (
+                    <div className="flex max-w-[180px] shrink-0 items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-2.5 py-1 text-xs font-medium text-primary">
+                      <ImageIcon className="h-3.5 w-3.5 shrink-0" />
+                      <span className="truncate">{imageFileName}</span>
+                    </div>
+                  )}
+                  {(currentInputValue || imageFileName) && (
+                    <button onClick={clearSearch} className="rounded-full p-2 text-zinc-400 hover:text-zinc-900 transition">
+                      <X className="w-4 h-4" />
+                    </button>
+                  )}
+                  <button onClick={() => fileInputRef.current?.click()} className="rounded-full p-2 text-zinc-400 hover:text-primary transition" title="Tìm kiếm theo hình ảnh">
+                    <Upload className="w-5 h-5" />
+                  </button>
+                  <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
+                  <Button
+                    variant="ghost" 
+                    size="icon"
+                    onClick={() => setShowFilters(true)}
+                    className={cn("rounded-full w-10 h-10 transition-colors relative", hasActiveFilters ? "text-primary bg-primary/10" : "text-zinc-400 hover:text-primary hover:bg-zinc-100/50")}
+                  >
+                    <Filter className="w-5 h-5" />
+                    {hasActiveFilters && <div className="absolute top-2 right-2 w-2 h-2 bg-primary rounded-full shadow-[0_0_10px_rgba(var(--primary),0.5)]" />}
+                  </Button>
+                </div>
               </div>
+
+              {/* Search History Dropdown */}
+              {searchFocused && !currentInputValue && !imageFileName && searchHistory.length > 0 && (
+                <div className="absolute top-full mt-3 left-0 right-0 bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-white/5 rounded-3xl shadow-2xl overflow-hidden py-3 px-3 z-[150] animate-in fade-in slide-in-from-top-4 duration-300">
+                  <div className="text-[11px] font-black text-zinc-300 dark:text-white/20 px-4 py-2 uppercase tracking-[0.2em]">Tìm kiếm gần đây</div>
+                  {searchHistory.map((q, i) => (
+                    <button
+                      key={i}
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        if (searchInputRef.current) searchInputRef.current.value = q;
+                        onSearchQueryChange?.(q);
+                        onSearchSubmit?.();
+                        setSearchFocused(false);
+                      }}
+                      className="w-full flex items-center gap-4 px-4 py-3 hover:bg-zinc-50 dark:hover:bg-white/5 rounded-2xl cursor-pointer text-base text-left text-zinc-700 dark:text-zinc-300 transition-colors"
+                    >
+                      <History className="w-4 h-4 text-zinc-300" />
+                      <span className="flex-1 truncate">{q}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Search History Dropdown */}
-            {searchFocused && !currentInputValue && !searchImagePath && searchHistory.length > 0 && (
-              <div className="absolute top-full mt-3 left-0 right-0 bg-white dark:bg-zinc-900 border border-zinc-100 dark:border-white/5 rounded-3xl shadow-2xl overflow-hidden py-3 px-3 z-[150] animate-in fade-in slide-in-from-top-4 duration-300">
-                <div className="text-[11px] font-black text-zinc-300 dark:text-white/20 px-4 py-2 uppercase tracking-[0.2em]">Tìm kiếm gần đây</div>
-                {searchHistory.map((q, i) => (
-                  <button
-                    key={i}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      if (searchInputRef.current) searchInputRef.current.value = q;
-                      onSearchQueryChange?.(q);
-                      onSearchSubmit?.();
-                      setSearchFocused(false);
-                    }}
-                    className="w-full flex items-center gap-4 px-4 py-3 hover:bg-zinc-50 dark:hover:bg-white/5 rounded-2xl cursor-pointer text-base text-left text-zinc-700 dark:text-zinc-300 transition-colors"
-                  >
-                    <History className="w-4 h-4 text-zinc-300" />
-                    <span className="flex-1 truncate">{q}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {/* Grid Menu Trigger — Glassmorphism */}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                className="w-14 h-14 rounded-full bg-gray-200 border border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:bg-gray-900 hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5 text-zinc-600 hover:text-primary transition-all duration-300 active:scale-95"
+            {/* Grid Menu Trigger — Glassmorphism */}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button 
+                  variant="ghost" 
+                  size="icon" 
+                  className="w-14 h-14 rounded-full bg-gray-200 border border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:bg-gray-900 hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5 text-zinc-600 hover:text-primary transition-all duration-300 active:scale-95"
+                >
+                  <Grid3X3 className="w-6 h-6" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent 
+                align="end" 
+                className="w-72 mt-4 bg-white/70 dark:bg-black/40 backdrop-blur-3xl border-white/20 dark:border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.2)] rounded-[32px] p-3 font-['Roboto']"
               >
-                <Grid3X3 className="w-6 h-6" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent 
-              align="end" 
-              className="w-72 mt-4 bg-white/70 dark:bg-black/40 backdrop-blur-3xl border-white/20 dark:border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.2)] rounded-[32px] p-3 font-['Roboto']"
-            >
-              <DropdownMenuLabel className="px-5 py-3 text-xs font-black uppercase tracking-[0.25em] text-white/30">Danh mục chính</DropdownMenuLabel>
-              <div className="space-y-1">
-                {menuItems.map(item => (
-                  <DropdownMenuItem 
-                    key={item.key} 
-                    onClick={() => onNavClick?.(item.key)}
-                    className={cn(
-                      "rounded-2xl px-5 py-4 cursor-pointer transition-all duration-200 group flex items-center gap-4",
-                      activeKey === item.key 
-                        ? "bg-white/15 text-white shadow-inner" 
-                        : "hover:bg-white/10 text-white/70 hover:text-white"
-                    )}
-                  >
-                    <div className={cn(
-                      "p-2 rounded-xl transition-colors",
-                      activeKey === item.key ? "bg-primary/20" : "bg-white/5 group-hover:bg-white/10"
-                    )}>
-                      <item.icon className="w-5 h-5" />
-                    </div>
-                    <span className="text-[17px] font-medium">{item.title}</span>
-                  </DropdownMenuItem>
-                ))}
-              </div>
-              <div className="h-px bg-white/5 my-3" />
-              <DropdownMenuItem 
-                onClick={() => setShowSettings(true)}
-                className="rounded-2xl px-5 py-4 cursor-pointer text-white/50 hover:text-white hover:bg-white/5 flex items-center gap-4 transition-colors"
-              >
-                <div className="p-2 rounded-xl bg-white/5 group-hover:bg-white/10">
-                  <Settings className="w-5 h-5" />
+                <DropdownMenuLabel className="px-5 py-3 text-xs font-black uppercase tracking-[0.25em] text-white/30">Danh mục chính</DropdownMenuLabel>
+                <div className="space-y-1">
+                  {menuItems.map(item => (
+                    <DropdownMenuItem 
+                      key={item.key} 
+                      onClick={() => onNavClick?.(item.key)}
+                      className={cn(
+                        "rounded-2xl px-5 py-4 cursor-pointer transition-all duration-200 group flex items-center gap-4",
+                        activeKey === item.key 
+                          ? "bg-white/15 text-white shadow-inner" 
+                          : "hover:bg-white/10 text-white/70 hover:text-white"
+                      )}
+                    >
+                      <div className={cn(
+                        "p-2 rounded-xl transition-colors",
+                        activeKey === item.key ? "bg-primary/20" : "bg-white/5 group-hover:bg-white/10"
+                      )}>
+                        <item.icon className="w-5 h-5" />
+                      </div>
+                      <span className="text-[17px] font-medium">{item.title}</span>
+                    </DropdownMenuItem>
+                  ))}
                 </div>
-                <span className="text-[17px]">Cài đặt</span>
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <div className="h-px bg-white/5 my-3" />
+                <DropdownMenuItem 
+                  onClick={() => setShowSettings(true)}
+                  className="rounded-2xl px-5 py-4 cursor-pointer text-white/50 hover:text-white hover:bg-white/5 flex items-center gap-4 transition-colors"
+                >
+                  <div className="p-2 rounded-xl bg-white/5 group-hover:bg-white/10">
+                    <Settings className="w-5 h-5" />
+                  </div>
+                  <span className="text-[17px]">Cài đặt</span>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
         </div>
       </div>
 

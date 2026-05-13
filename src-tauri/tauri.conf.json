@@ -39,35 +39,6 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "windows": {
-      "nsis": {
-        "installerHooks": "nsis/hooks.nsh"
-      }
-    },
-    "externalBin": [
-      "binaries/surreal"
-    ],
-    "resources": [],
-    "linux": {
-      "deb": {
-        "depends": [
-          "libwebkit2gtk-4.1-0",
-          "libgtk-3-0",
-          "libsoup-3.0-0",
-          "libglib2.0-0",
-          "libgdk-pixbuf-2.0-0",
-          "libpango-1.0-0",
-          "libcairo2",
-          "libgcc-s1",
-          "libc6",
-          "ffmpeg",
-          "libopencv-dev",
-          "gstreamer1.0-libav",
-          "gstreamer1.0-plugins-good",
-          "gstreamer1.0-plugins-bad",
-          "gstreamer1.0-plugins-ugly"
-        ]
-      }
-    }
+    "externalBin": []
   }
 }

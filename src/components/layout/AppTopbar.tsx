@@ -26,6 +26,7 @@ interface AppTopbarProps {
   selectionMode?: boolean;
   onSelectionModeChange?: (mode: boolean) => void;
   syncStatus?: SyncStatus | null;
+  onReload?: () => void;
 }
 
 export function AppTopbar({
@@ -42,6 +43,7 @@ export function AppTopbar({
   selectionMode = false,
   onSelectionModeChange,
   syncStatus,
+  onReload,
 }: AppTopbarProps) {
   const { theme, setTheme } = useTheme();
   const { selectedIds, clearSelection } = useSelection();
@@ -183,6 +185,8 @@ export function AppTopbar({
             ref={searchInputRef}
             type="text"
             id="search-input"
+            autoComplete="off"
+            spellCheck="false"
             defaultValue={searchQuery}
             onInput={handleInput}
             onCompositionStart={handleCompositionStart}
@@ -301,6 +305,15 @@ export function AppTopbar({
             <span>Lỗi đồng bộ</span>
           </div>
         )}
+        <Button
+          variant="ghost"
+          size="icon"
+          className="rounded-full w-8 h-8 ml-1"
+          onClick={onReload}
+          title="Tải lại dữ liệu"
+        >
+          <RefreshCw className="w-4 h-4 text-muted-foreground" />
+        </Button>
         <span className="hidden sm:inline-block font-medium">{totalImages > 0 ? `${totalImages} Ảnh & Video` : ""}</span>
         <Button
           variant="ghost"

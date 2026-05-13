@@ -25,8 +25,8 @@ import {
 } from "@/components/ui/sidebar";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Settings, ChevronRight } from "lucide-react";
-import { useState } from "react";
-import { SettingsModal } from "@/components/common/SettingsModal";
+import { useEffect, useState } from "react";
+import { EVENT_FORCE_CLOSE_SETTINGS, SettingsModal } from "@/components/common/SettingsModal";
 
 const mainItems = [
   { title: "Ảnh", url: "#", icon: ImageIcon, key: "timeline" },
@@ -70,6 +70,12 @@ export function AppSidebar({
   onSourceDirChange?: (dir: string) => void;
 }) {
   const [showSettings, setShowSettings] = useState(false);
+
+  useEffect(() => {
+    const forceClose = () => setShowSettings(false);
+    window.addEventListener(EVENT_FORCE_CLOSE_SETTINGS, forceClose);
+    return () => window.removeEventListener(EVENT_FORCE_CLOSE_SETTINGS, forceClose);
+  }, []);
 
   return (
     <Sidebar variant="inset" className="border-r-0 bg-background">
