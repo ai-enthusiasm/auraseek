@@ -39,6 +39,8 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          # Invalidate when native OpenCV major/minor changes (linker + opencv-sys).
+          shared-key: opencv-4.6.0-msvc
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
@@ -48,7 +50,7 @@ jobs:
         with:
           path: opencv
           # Bump when install script changes (avoids restoring broken partial trees).
-          key: opencv-4.10.0-windows-${{ runner.os }}-v3-layout-resolve
+          key: opencv-4.6.0-windows-${{ runner.os }}-v4-opencv46
 
       # opencv-rust needs headers + import libraries (.lib), not only DLLs.
       # Official Windows pack: https://github.com/opencv/opencv/releases
@@ -77,7 +79,7 @@ jobs:
           if (-not (Test-OpenCvOk $build)) {
             Write-Host "OpenCV missing or incomplete under $top — removing and re-extracting into repo root: $ws"
             if (Test-Path $top) { Remove-Item -LiteralPath $top -Recurse -Force }
-            $ver = "4.10.0"
+            $ver = "4.6.0"
             $setup = Join-Path $env:RUNNER_TEMP "opencv-$ver-windows.exe"
             $url = "https://github.com/opencv/opencv/releases/download/$ver/opencv-$ver-windows.exe"
             Write-Host "Downloading $url ..."
@@ -119,7 +121,7 @@ jobs:
           $binDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           # Bundle the same OpenCV runtime the binary was linked against (see
           # `tauri.windows.conf.json` + `ensure_native_libs`). Without this, the
-          # MSI can ship without e.g. opencv_world4100.dll while the exe expects it.
+          # MSI can ship without e.g. opencv_world460.dll while the exe expects it.
           $bundleLibs = Join-Path $ws "src-tauri\libs\windows"
           New-Item -ItemType Directory -Force -Path $bundleLibs | Out-Null
           Copy-Item -Path (Join-Path $binDir "opencv*.dll") -Destination $bundleLibs -Force
