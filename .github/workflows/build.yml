@@ -29,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: yarn
 
       - name: Setup Rust
@@ -141,7 +141,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: yarn
 
       - name: Setup Rust
@@ -176,7 +176,9 @@ jobs:
 
   build-linux:
     name: Build Linux
-    runs-on: ubuntu-22.04
+    # ubuntu-22.04 ships glibc 2.35; bundled ONNX Runtime (ort/ort-sys) links
+    # against __isoc23_* (strtol family) which require glibc >= 2.38.
+    runs-on: ubuntu-24.04
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
     steps:
       - name: Checkout repository
@@ -185,7 +187,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: yarn
 
       - name: Setup Rust
