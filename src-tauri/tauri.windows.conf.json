@@ -1,8 +1,8 @@
 {
   "bundle": {
-    "resources": [
-      "libs/windows/**/*"
-    ],
+    "resources": {
+      "libs/windows/*.dll": ""
+    },
     "windows": {}
   }
 }
