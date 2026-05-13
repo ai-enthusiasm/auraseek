@@ -93,18 +93,13 @@ impl FaceModel {
     pub fn new(yunet_path: &str, sface_path: &str, num_threads: usize) -> Result<Self> {
         let size = Size::new(320, 320);
         
-        #[cfg(target_os = "macos")]
+        // opencv-rust 0.98+ no longer exposes `get_cuda_enabled_device_count` on all targets.
+        // Use OpenCV CPU DNN backend everywhere (stable on Windows/Linux CI and macOS).
         let (backend, target, provider_name) = (
             opencv::dnn::DNN_BACKEND_OPENCV,
             opencv::dnn::DNN_TARGET_CPU,
-            "CPU (forced-macos)",
+            "CPU",
         );
-        #[cfg(not(target_os = "macos"))]
-        let (backend, target, provider_name) = if opencv::core::get_cuda_enabled_device_count()? > 0 {
-            (opencv::dnn::DNN_BACKEND_CUDA, opencv::dnn::DNN_TARGET_CUDA, "CUDA")
-        } else {
-            (opencv::dnn::DNN_BACKEND_OPENCV, opencv::dnn::DNN_TARGET_CPU, "CPU")
-        };
 
         log_info!("model: {:<45} | provider: {} | threads: {}", yunet_path, provider_name, num_threads);
 

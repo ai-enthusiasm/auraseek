@@ -155,6 +155,13 @@ jobs:
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
 
+      # opencv-rust build.rs loads libclang.dylib; Xcode CLI tools alone are not enough on GHA.
+      - name: Install LLVM + OpenCV (macOS)
+        run: |
+          brew install llvm opencv pkg-config
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          echo "PATH=$(brew --prefix llvm)/bin:$PATH" >> "$GITHUB_ENV"
+
       - name: Build macOS app
         run: yarn tauri:build:macos
 
@@ -191,7 +198,20 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            libopencv-dev \
+            pkg-config
+
+      # opencv-rust build.rs needs libclang.so (clang-sys).
+      - name: Set LIBCLANG_PATH (Linux)
+        run: |
+          echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          if command -v llvm-config >/dev/null 2>&1; then
+            echo "LLVM_CONFIG_PATH=$(command -v llvm-config)" >> "$GITHUB_ENV"
+          fi
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
