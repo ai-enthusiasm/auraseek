@@ -47,14 +47,19 @@ jobs:
         uses: actions/cache@v4
         with:
           path: opencv
-          key: opencv-4.10.0-windows-${{ runner.os }}
+          # Bump suffix if extract path / OpenCV layout changes (clears bad cache).
+          key: opencv-4.10.0-windows-${{ runner.os }}-extract-to-workspace
 
       # opencv-rust needs headers + import libraries (.lib), not only DLLs.
       # Official Windows pack: https://github.com/opencv/opencv/releases
       - name: Install OpenCV prebuilt (Windows / MSVC)
         shell: pwsh
         run: |
-          $root = Join-Path $env:GITHUB_WORKSPACE "opencv"
+          $ws = $env:GITHUB_WORKSPACE
+          # The self-extractor always creates a top-level folder "opencv\" inside -o.
+          # So -o must be the repo root (…\auraseek\auraseek), NOT …\auraseek\opencv
+          # (otherwise you get …\opencv\opencv\build and this step fails).
+          $root = Join-Path $ws "opencv"
           $build = Join-Path $root "build"
           if (-not (Test-Path (Join-Path $build "include"))) {
             $ver = "4.10.0"
@@ -62,9 +67,14 @@ jobs:
             $url = "https://github.com/opencv/opencv/releases/download/$ver/opencv-$ver-windows.exe"
             Write-Host "Downloading $url ..."
             Invoke-WebRequest -Uri $url -OutFile $setup
-            Write-Host "Extracting to $root ..."
-            Start-Process -FilePath $setup -ArgumentList "-o$root","-y" -Wait -NoNewWindow
+            Write-Host "Extracting into $ws (expect $root\build\...) ..."
+            $p = Start-Process -FilePath $setup -ArgumentList "-o$ws","-y" -Wait -PassThru -NoNewWindow
             Remove-Item $setup -Force -ErrorAction SilentlyContinue
+            if ($p.ExitCode -ne 0) { throw "OpenCV installer exit code $($p.ExitCode)" }
+          }
+          if (-not (Test-Path (Join-Path $build "include"))) {
+            Get-ChildItem -Path $ws -ErrorAction SilentlyContinue | Write-Host
+            throw "OpenCV layout missing: expected $($build)\include (wrong -o or corrupt cache)."
           }
           $x64 = Join-Path $build "x64"
           if (-not (Test-Path $x64)) { throw "OpenCV extract failed: missing $x64" }
