@@ -28,6 +28,10 @@ impl SearchPipeline {
         let limit = config.search_limit;
         let collection = &config.qdrant_collection;
 
+        let lo = config.search_sql_limit_object_filter;
+        let lf = config.search_sql_limit_face_filter;
+        let lfo = config.search_sql_limit_filter_only;
+
         match query.mode {
             SearchMode::Text => {
                 let text = query.text.as_deref().unwrap_or("");
@@ -86,10 +90,13 @@ impl SearchPipeline {
                     let conn = db.conn();
                     let rows = read_media_rows_from_query(
                         &conn,
-                        "SELECT DISTINCT m.*
+                        &format!(
+                            "SELECT DISTINCT m.*
                          FROM media m JOIN media_objects o ON o.media_id = m.id
                          WHERE o.class_name = ?1 AND m.deleted_at IS NULL AND m.is_hidden = 0
-                         ORDER BY m.meta_created_at DESC LIMIT 100",
+                         ORDER BY m.meta_created_at DESC LIMIT {}",
+                            lo
+                        ),
                         &[&class as &dyn rusqlite::ToSql],
                     )?;
                     drop(conn);
@@ -115,10 +122,13 @@ impl SearchPipeline {
                     let conn = db.conn();
                     let rows = read_media_rows_from_query(
                         &conn,
-                        "SELECT DISTINCT m.*
+                        &format!(
+                            "SELECT DISTINCT m.*
                          FROM media m JOIN media_faces f ON f.media_id = m.id
                          WHERE (f.face_id = ?1 OR f.name = ?1) AND m.deleted_at IS NULL AND m.is_hidden = 0
-                         ORDER BY m.meta_created_at DESC LIMIT 100",
+                         ORDER BY m.meta_created_at DESC LIMIT {}",
+                            lf
+                        ),
                         &[&name as &dyn rusqlite::ToSql],
                     )?;
                     drop(conn);
@@ -143,8 +153,11 @@ impl SearchPipeline {
                     let conn = db.conn();
                     let rows = read_media_rows_from_query(
                         &conn,
-                        "SELECT * FROM media WHERE deleted_at IS NULL AND is_hidden = 0
-                         ORDER BY meta_created_at DESC LIMIT 200",
+                        &format!(
+                            "SELECT * FROM media WHERE deleted_at IS NULL AND is_hidden = 0
+                         ORDER BY meta_created_at DESC LIMIT {}",
+                            lfo
+                        ),
                         &[],
                     )?;
                     drop(conn);

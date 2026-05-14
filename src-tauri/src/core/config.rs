@@ -25,11 +25,35 @@ pub struct AppConfig {
 
     pub face_detection_threshold: f32,
     pub face_identity_threshold: f32,
+    /// YuNet post-NMS IoU overlap threshold (OpenCV-style suppression).
+    pub face_nms_iou_threshold: f32,
+    /// Max face candidates kept (by score) before NMS; must be ≥ 1.
+    pub face_top_k: usize,
     pub yolo_confidence: f32,
     pub yolo_iou: f32,
     pub search_threshold: f32,
     pub search_limit: usize,
     pub max_batch_size: usize,
+
+    /// `ffmpeg` scene filter: `select='gt(scene, THRESHOLD)'` (0.0–1.0).
+    pub video_scene_threshold: f64,
+
+    /// Minimum similarity for “near duplicate”: Qdrant `score_threshold` in duplicate finder,
+    /// and cosine threshold when skipping redundant consecutive `video_frame` embeddings during ingest.
+    pub duplicate_score_threshold: f32,
+    /// Page size for Qdrant scroll when loading embeddings for duplicate detection.
+    pub duplicate_scroll_page_size: usize,
+
+    /// BPE text-query token cap (must match model max positions where applicable).
+    pub text_query_max_len: usize,
+
+    pub search_sql_limit_object_filter: usize,
+    pub search_sql_limit_face_filter: usize,
+    pub search_sql_limit_filter_only: usize,
+
+    pub fs_watcher_debounce_ms: u64,
+    /// Minimum free RAM % (`available_ram_percent`) required before watcher ingests a batch.
+    pub fs_watcher_min_ram_percent: f32,
 
     pub device: DevicePreference,
     pub num_threads: usize,
@@ -53,13 +77,29 @@ impl Default for AppConfig {
             data_dir,
             log_path,
 
-            face_detection_threshold: 0.93,
-            face_identity_threshold: 0.33,
+            face_detection_threshold: 0.912,
+            face_identity_threshold: 0.351,
+            face_nms_iou_threshold: 0.351,
+            face_top_k: 5000,
             yolo_confidence: 0.25,
             yolo_iou: 0.45,
             search_threshold: 0.256,
             search_limit: 10000,
             max_batch_size: 1,
+
+            video_scene_threshold: 0.11,
+
+            duplicate_score_threshold: 0.92,
+            duplicate_scroll_page_size: 256,
+
+            text_query_max_len: 64,
+
+            search_sql_limit_object_filter: 100,
+            search_sql_limit_face_filter: 100,
+            search_sql_limit_filter_only: 200,
+
+            fs_watcher_debounce_ms: 2000,
+            fs_watcher_min_ram_percent: 10.0,
 
             device: DevicePreference::Auto,
             num_threads: 1,
@@ -130,6 +170,19 @@ fn clamp_f32(val: f32, min: f32, max: f32, name: &str) -> f32 {
     }
 }
 
+fn clamp_f64(val: f64, min: f64, max: f64, name: &str) -> f64 {
+    if val < min || val > max {
+        let clamped = val.clamp(min, max);
+        eprintln!(
+            "[config] {} value {:.4} out of range [{:.2}, {:.2}], clamped to {:.4}",
+            name, val, min, max, clamped
+        );
+        clamped
+    } else {
+        val
+    }
+}
+
 impl AppConfig {
     pub fn from_env() -> Self {
         let defaults = Self::default();
@@ -171,10 +224,22 @@ impl AppConfig {
             env_or("AURASEEK_FACE_DETECTION_THRESHOLD", defaults.face_detection_threshold),
             0.0, 1.0, "AURASEEK_FACE_DETECTION_THRESHOLD",
         );
-        let face_identity_threshold = clamp_f32(
-            env_or("AURASEEK_FACE_IDENTITY_THRESHOLD", defaults.face_identity_threshold),
-            0.0, 1.0, "AURASEEK_FACE_IDENTITY_THRESHOLD",
+        // Legacy alias: AURASEEK_FACE_THRESHOLD (docs / older .env) if IDENTITY not set.
+        let face_identity_threshold = {
+            let primary = std::env::var("AURASEEK_FACE_IDENTITY_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            let legacy = std::env::var("AURASEEK_FACE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            let raw = primary.or(legacy).unwrap_or(defaults.face_identity_threshold);
+            clamp_f32(raw, 0.0, 1.0, "AURASEEK_FACE_IDENTITY_THRESHOLD")
+        };
+        let face_nms_iou_threshold = clamp_f32(
+            env_or("AURASEEK_FACE_NMS_IOU_THRESHOLD", defaults.face_nms_iou_threshold),
+            0.0, 1.0, "AURASEEK_FACE_NMS_IOU_THRESHOLD",
         );
+        let face_top_k = env_or("AURASEEK_FACE_TOP_K", defaults.face_top_k).max(1);
         let yolo_confidence = clamp_f32(
             env_or("AURASEEK_YOLO_CONFIDENCE", defaults.yolo_confidence),
             0.0, 1.0, "AURASEEK_YOLO_CONFIDENCE",
@@ -206,6 +271,55 @@ impl AppConfig {
         let search_limit = env_or("AURASEEK_SEARCH_LIMIT", defaults.search_limit)
             .max(1);
 
+        let video_scene_threshold = clamp_f64(
+            env_or("AURASEEK_VIDEO_SCENE_THRESHOLD", defaults.video_scene_threshold),
+            0.0,
+            1.0,
+            "AURASEEK_VIDEO_SCENE_THRESHOLD",
+        );
+
+        let duplicate_score_threshold = {
+            let primary = std::env::var("AURASEEK_DUPLICATE_SCORE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            // Legacy: same semantics were split into a separate video-only env.
+            let legacy_video = std::env::var("AURASEEK_VIDEO_FRAME_DEDUP_COSINE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            let raw = primary
+                .or(legacy_video)
+                .unwrap_or(defaults.duplicate_score_threshold);
+            clamp_f32(raw, 0.0, 1.0, "AURASEEK_DUPLICATE_SCORE_THRESHOLD")
+        };
+        let duplicate_scroll_page_size =
+            env_or("AURASEEK_DUPLICATE_SCROLL_PAGE_SIZE", defaults.duplicate_scroll_page_size).max(1);
+
+        let text_query_max_len = env_or("AURASEEK_TEXT_QUERY_MAX_LEN", defaults.text_query_max_len).max(8);
+
+        let search_sql_limit_object_filter = env_or(
+            "AURASEEK_SEARCH_SQL_LIMIT_OBJECT_FILTER",
+            defaults.search_sql_limit_object_filter,
+        )
+        .max(1);
+        let search_sql_limit_face_filter = env_or(
+            "AURASEEK_SEARCH_SQL_LIMIT_FACE_FILTER",
+            defaults.search_sql_limit_face_filter,
+        )
+        .max(1);
+        let search_sql_limit_filter_only = env_or(
+            "AURASEEK_SEARCH_SQL_LIMIT_FILTER_ONLY",
+            defaults.search_sql_limit_filter_only,
+        )
+        .max(1);
+
+        let fs_watcher_debounce_ms = env_or("AURASEEK_FS_WATCHER_DEBOUNCE_MS", defaults.fs_watcher_debounce_ms).max(1);
+        let fs_watcher_min_ram_percent = clamp_f32(
+            env_or("AURASEEK_FS_WATCHER_MIN_RAM_PERCENT", defaults.fs_watcher_min_ram_percent),
+            0.0,
+            100.0,
+            "AURASEEK_FS_WATCHER_MIN_RAM_PERCENT",
+        );
+
         let debug = env_or("AURASEEK_DEBUG", defaults.debug);
 
         Self {
@@ -220,11 +334,22 @@ impl AppConfig {
             qdrant_collection,
             face_detection_threshold,
             face_identity_threshold,
+            face_nms_iou_threshold,
+            face_top_k,
             yolo_confidence,
             yolo_iou,
             search_threshold,
             search_limit,
             max_batch_size,
+            video_scene_threshold,
+            duplicate_score_threshold,
+            duplicate_scroll_page_size,
+            text_query_max_len,
+            search_sql_limit_object_filter,
+            search_sql_limit_face_filter,
+            search_sql_limit_filter_only,
+            fs_watcher_debounce_ms,
+            fs_watcher_min_ram_percent,
             device,
             num_threads,
             debug,
@@ -250,10 +375,34 @@ impl AppConfig {
         crate::log_info!("   Qdrant store:  {}", self.qdrant_storage_dir.display());
         crate::log_info!("   Device:        {:?}", self.device);
         crate::log_info!("   Threads:       {}", self.num_threads);
-        crate::log_info!("   Face (Det/Id): {:.4} / {:.4}", self.face_detection_threshold, self.face_identity_threshold);
+        crate::log_info!(
+            "   Face (Det/Id/NMS/topK): {:.4} / {:.4} / {:.4} / {}",
+            self.face_detection_threshold,
+            self.face_identity_threshold,
+            self.face_nms_iou_threshold,
+            self.face_top_k
+        );
         crate::log_info!("   Search:        {:.4} (limit: {})", self.search_threshold, self.search_limit);
         crate::log_info!("   YOLO (Conf/IOU): {:.4} / {:.4}", self.yolo_confidence, self.yolo_iou);
         crate::log_info!("   Max Batch:     {}", self.max_batch_size);
+        crate::log_info!(
+            "   Video scene: {:.4} | near-dup similarity {:.4} (video dedup + Qdrant) | scroll {}",
+            self.video_scene_threshold,
+            self.duplicate_score_threshold,
+            self.duplicate_scroll_page_size
+        );
+        crate::log_info!("   Text query max len: {}", self.text_query_max_len);
+        crate::log_info!(
+            "   SQL limits (obj/face/filter): {}/{}/{}",
+            self.search_sql_limit_object_filter,
+            self.search_sql_limit_face_filter,
+            self.search_sql_limit_filter_only
+        );
+        crate::log_info!(
+            "   FS watcher:    debounce {} ms | min RAM {:.1}%",
+            self.fs_watcher_debounce_ms,
+            self.fs_watcher_min_ram_percent
+        );
         crate::log_info!("   Debug Mode:    {}", self.debug);
     }
 }

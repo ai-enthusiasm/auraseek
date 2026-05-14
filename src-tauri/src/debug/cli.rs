@@ -179,7 +179,11 @@ fn process_video_debug(engine: &mut AuraSeekEngine, path: &Path, output_base: &s
         return Ok(());
     }
 
-    let cuts = detect_scenes(video_path, fps)?;
+    let cuts = detect_scenes(
+        video_path,
+        fps,
+        crate::core::config::AppConfig::global().video_scene_threshold,
+    )?;
     crate::log_info!("  🎬 {} scenes detected", cuts.len() + 1);
 
     let mut scenes: Vec<(u64, u64)> = Vec::new();

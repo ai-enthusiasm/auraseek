@@ -23,7 +23,7 @@ pub fn encode_text_query(
     crate::log_info!("🔤 Text query: '{}' → normalized: '{}'", text, normalized);
 
     // ── 2. Tokenize via BPE ──────────────────────────────────────────────────
-    let max_len = 64;
+    let max_len = crate::core::config::AppConfig::global().text_query_max_len;
     let (input_ids, attention_mask) = engine.text_proc.encode(&normalized, max_len);
 
     let real_len = input_ids.iter()

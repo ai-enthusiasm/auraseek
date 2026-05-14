@@ -6,7 +6,7 @@
 ///   3. Extract 3 frames per scene (start / mid / end)
 ///   4. Run full AI pipeline (YOLO + face + embedding) on each frame
 ///   5. Aggregate objects + faces across all frames → update media record
-///   6. Store per-frame embeddings (skip near-duplicates, cosine > 0.98)
+///   6. Store per-frame embeddings (skip consecutive near-duplicates when cos ≥ `duplicate_score_threshold`)
 ///   7. Save first-frame thumbnail as `<stem>.thumb.jpg` in the same directory
 use anyhow::Result;
 use std::collections::HashMap;
@@ -18,13 +18,11 @@ use crate::platform::process::hidden_command;
 use crate::infrastructure::database::{SqliteDb, DbOperations};
 use crate::infrastructure::database::models::{ObjectEntry, FaceEntry, Bbox, PersonDoc};
 use crate::infrastructure::ai::AuraSeekEngine;
-use crate::infrastructure::ai::vision::coco_label_vi;
+use crate::infrastructure::ai::vision::{coco_label_vi, cosine_similarity};
 use crate::{log_info, log_warn};
 
-/// Scene-detection threshold for ffmpeg (0 = no change, 1 = full change).
-const SCENE_THRESHOLD: f64 = 0.11;
-/// Two frames whose vision embeddings have cosine similarity ≥ this are considered duplicates.
-const DEDUP_THRESHOLD: f32 = 0.92;
+/// Two frames whose vision embeddings have cosine similarity ≥ `AppConfig::duplicate_score_threshold`
+/// are treated as duplicates for ingest (same field as Qdrant duplicate `score_threshold`).
 
 /// Full video processing pipeline.
 /// If `thumb_cache_dir` is Some, thumbnails (video + face) are written there instead of next to the video;
@@ -47,7 +45,10 @@ pub async fn process_video(
     }
 
     // ── 1. Scene detection ───────────────────────────────────────────────────
-    let cuts = detect_scenes(video_path, fps)?;
+    let cuts = {
+        let scene = crate::core::config::AppConfig::global().video_scene_threshold;
+        detect_scenes(video_path, fps, scene)?
+    };
     log_info!("🎬 {} scenes detected", cuts.len() + 1);
 
     // Build (start, end) frame ranges from cut points
@@ -127,6 +128,7 @@ pub async fn process_video(
     let mut face_map: HashMap<String, FaceEntry>   = HashMap::new();
     let mut face_frame_map: HashMap<String, u64>   = HashMap::new();
     let mut embed_count = 0usize;
+    let mut last_stored_emb: Option<Vec<f32>> = None;
 
     let scenes_clone = scenes.clone();
     let config = crate::core::config::AppConfig::global();
@@ -208,6 +210,18 @@ pub async fn process_video(
         }
 
         if qdrant_ready_for_embeddings && !output.vision_embedding.is_empty() {
+            let dedup_thr = config.duplicate_score_threshold;
+            let skip_dedup = last_stored_emb.as_ref().is_some_and(|prev| {
+                cosine_similarity(prev, &output.vision_embedding) >= dedup_thr
+            });
+            if skip_dedup {
+                log_info!(
+                    "  ⏭️  Frame {} @ {:.2}s skipped (embedding dedup, cos ≥ {:.4})",
+                    frame_idx, timestamp, dedup_thr
+                );
+                continue;
+            }
+
             let qdrant_guard = qdrant.lock().await;
             if let Some(ref client) = *qdrant_guard {
                 if let Err(e) = DbOperations::insert_embedding(
@@ -219,6 +233,7 @@ pub async fn process_video(
                     embedding_error = true;
                 } else {
                     embed_count += 1;
+                    last_stored_emb = Some(output.vision_embedding.clone());
                     log_info!("  ✅ Frame {} @ {:.2}s embedded", frame_idx, timestamp);
                 }
             } else {
@@ -348,8 +363,8 @@ pub(crate) fn probe_video(video_path: &str) -> Result<(f64, u64)> {
     Ok((fps, total))
 }
 
-pub(crate) fn detect_scenes(video_path: &str, fps: f64) -> Result<Vec<u64>> {
-    let filter = format!("select='gt(scene,{})',showinfo", SCENE_THRESHOLD);
+pub(crate) fn detect_scenes(video_path: &str, fps: f64, scene_threshold: f64) -> Result<Vec<u64>> {
+    let filter = format!("select='gt(scene,{})',showinfo", scene_threshold);
     let output = hidden_command("ffmpeg")
         .args(["-i", video_path, "-vf", &filter, "-vsync","vfr","-f","null","-"])
         .stdout(std::process::Stdio::null())
@@ -395,15 +410,6 @@ fn parse_pts_time(line: &str) -> Option<f64> {
     let rest = &line[pos + key.len()..];
     let end  = rest.find(|c: char| !c.is_ascii_digit() && c != '.').unwrap_or(rest.len());
     rest[..end].parse().ok()
-}
-
-#[allow(dead_code)]
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() { return 0.0; }
-    let dot: f32 = a.iter().zip(b).map(|(x,y)| x*y).sum();
-    let na: f32  = a.iter().map(|x| x*x).sum::<f32>().sqrt();
-    let nb: f32  = b.iter().map(|x| x*x).sum::<f32>().sqrt();
-    if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
 }
 
 pub(crate) fn is_good_brightness(path: &Path) -> (bool, f64) {

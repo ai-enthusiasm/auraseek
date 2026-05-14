@@ -9,21 +9,17 @@ use opencv::{
     prelude::*,
 };
 use super::db::FaceDb;
+use crate::core::config::AppConfig;
 use crate::infrastructure::ai::runtime::build_session;
 use crate::log_info;
 
- 
-const NMS_THRESHOLD: f32 = 0.3;
-const TOP_K: i32 = 5000;
 // This YuNet checkpoint expects fixed NCHW input [1,3,120,160].
 const YUNET_INPUT_H: usize = 120;
 const YUNET_INPUT_W: usize = 160;
 const YUNET_VARIANCE_0: f32 = 0.1;
 const YUNET_VARIANCE_1: f32 = 0.2;
-/// Default cosine similarity for face identity (keep in sync with `AppConfig::default().face_threshold`).
-/// Runtime matching uses the `identity_threshold` argument on detect APIs and `AuraSeekEngine.face_threshold`.
-#[allow(dead_code)]
-pub const COSINE_THRESHOLD: f32 = 0.33;
+/// Cosine similarity for face identity is configured via `AppConfig::face_identity_threshold`
+/// (`AURASEEK_FACE_IDENTITY_THRESHOLD` or legacy `AURASEEK_FACE_THRESHOLD`).
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FaceGroup {
@@ -59,6 +55,8 @@ pub struct FaceModel {
     detector_size: Size,
     recognizer:    Ptr<FaceRecognizerSF>,
     score_threshold: f32,
+    nms_iou_threshold: f32,
+    top_k: usize,
 }
 
 impl FaceModel {
@@ -92,7 +90,7 @@ impl FaceModel {
 
     pub fn new(yunet_path: &str, sface_path: &str, num_threads: usize) -> Result<Self> {
         let size = Size::new(320, 320);
-        
+        let cfg = AppConfig::global();
         // opencv-rust 0.98+ no longer exposes `get_cuda_enabled_device_count` on all targets.
         // Use OpenCV CPU DNN backend everywhere (stable on Windows/Linux CI and macOS).
         let (backend, target, provider_name) = (
@@ -117,7 +115,9 @@ impl FaceModel {
             yunet_session,
             detector_size: size,
             recognizer,
-            score_threshold: 0.93,
+            score_threshold: cfg.face_detection_threshold,
+            nms_iou_threshold: cfg.face_nms_iou_threshold,
+            top_k: cfg.face_top_k,
         })
     }
 
@@ -382,11 +382,14 @@ impl FaceModel {
         }
 
         raw_faces.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
+        if raw_faces.len() > self.top_k {
+            raw_faces.truncate(self.top_k);
+        }
         let mut kept: Vec<YuNetFace> = Vec::new();
         for f in raw_faces {
             let mut overlap = false;
             for k in &kept {
-                if calc_iou(&f.bbox, &k.bbox) > 0.3 {
+                if calc_iou(&f.bbox, &k.bbox) > self.nms_iou_threshold {
                     overlap = true;
                     break;
                 }

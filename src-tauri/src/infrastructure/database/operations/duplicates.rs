@@ -1,12 +1,11 @@
 use anyhow::Result;
+use crate::core::config::AppConfig;
 use crate::infrastructure::database::SqliteDb;
 use crate::core::models::{DuplicateGroup, DuplicateItem};
 use qdrant_client::Qdrant;
 use qdrant_client::qdrant::{vector_output, Condition, Filter, ScrollPointsBuilder, SearchPointsBuilder};
 use super::DbOperations;
 use std::sync::Arc;
-
-const DUPLICATE_THRESHOLD: f32 = 0.92;
 
 fn hamming(a: u64, b: u64) -> u32 { (a ^ b).count_ones() }
 
@@ -159,6 +158,10 @@ impl DbOperations {
 
         // ── 3. Vision vector similarity via Qdrant nearest-neighbor search ──
         {
+            let cfg = AppConfig::global();
+            let duplicate_threshold = cfg.duplicate_score_threshold;
+            let scroll_page = cfg.duplicate_scroll_page_size as u32;
+
             let source_filter = match media_type {
                 Some("video") => "video_frame",
                 _ => "image",
@@ -173,7 +176,7 @@ impl DbOperations {
             loop {
                 let mut builder = ScrollPointsBuilder::new(collection)
                     .filter(filter.clone())
-                    .limit(256)
+                    .limit(scroll_page)
                     .with_vectors(true)
                     .with_payload(true);
                 if let Some(ref offset) = next_offset {
@@ -226,7 +229,7 @@ impl DbOperations {
                     let resp = qdrant.search_points(
                         SearchPointsBuilder::new(collection, query_vec, rep.len() as u64)
                             .filter(filter.clone())
-                            .score_threshold(DUPLICATE_THRESHOLD)
+                            .score_threshold(duplicate_threshold)
                             .with_payload(true)
                     ).await?;
 
