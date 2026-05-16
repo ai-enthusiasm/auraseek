@@ -119,7 +119,7 @@ pub fn run() {
 
 fn main() -> Result<()> {
     #[cfg(target_os = "linux")]
-    {
+    unsafe {
         // 1. Detect if we are running inside an AppImage container
         if let Ok(appdir) = std::env::var("APPDIR") {
             // Fix WebKitGTK Process Paths dynamically

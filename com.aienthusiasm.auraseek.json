@@ -35,7 +35,7 @@
         {
           "type": "file",
           "url": "https://nodejs.org/dist/v22.2.0/node-v22.2.0-linux-x64.tar.xz",
-          "sha256": "4e723528b80983de062bf63e52cdff0c4873c52e858db49eb12f5a5871f30e7a"
+          "sha256": "3544eee9cb1414d6e9003efd56bc807ffb0f4445d2fc383e1df04c3e5e72c91b"
         }
       ]
     },
