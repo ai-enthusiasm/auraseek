@@ -29,7 +29,7 @@
       "name": "node",
       "buildsystem": "simple",
       "build-commands": [
-        "tar -C /usr --strip-components=1 -xzf node-v22.2.0-linux-x64.tar.xz"
+        "tar -C /usr --strip-components=1 -xf node-v22.2.0-linux-x64.tar.xz"
       ],
       "sources": [
         {
