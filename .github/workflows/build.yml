@@ -251,3 +251,31 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
           if-no-files-found: error
+
+  build-flatpak:
+    name: Build Flatpak (Linux)
+    runs-on: ubuntu-24.04
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install flatpak-builder
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak-builder
+
+      - name: Set up Flatpak/Flathub
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v1
+        with:
+          bundle: auraseek.flatpak
+          manifest-path: com.aienthusiasm.auraseek.json
+          app-id: com.aienthusiasm.auraseek
+          run-tests: false
+
+      - name: Upload Flatpak Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: auraseek-flatpak
+          path: auraseek.flatpak
+          if-no-files-found: error

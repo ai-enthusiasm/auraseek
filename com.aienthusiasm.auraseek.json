@@ -1,0 +1,90 @@
+{
+  "app-id": "com.aienthusiasm.auraseek",
+  "runtime": "org.gnome.Platform",
+  "runtime-version": "46",
+  "sdk": "org.gnome.Sdk",
+  "sdk-extensions": [
+    "org.freedesktop.Sdk.Extension.rust-stable"
+  ],
+  "command": "auraseek",
+  "finish-args": [
+    "--share=ipc",
+    "--socket=fallback-x11",
+    "--socket=wayland",
+    "--socket=x11",
+    "--socket=pulseaudio",
+    "--share=network",
+    "--filesystem=xdg-user-dirs-configuration",
+    "--filesystem=host",
+    "--device=dri"
+  ],
+  "build-options": {
+    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "env": {
+      "CARGO_HOME": "/run/build/auraseek/cargo"
+    }
+  },
+  "modules": [
+    {
+      "name": "node",
+      "buildsystem": "simple",
+      "build-commands": [
+        "tar -C /usr --strip-components=1 -xzf node-v22.2.0-linux-x64.tar.xz"
+      ],
+      "sources": [
+        {
+          "type": "file",
+          "url": "https://nodejs.org/dist/v22.2.0/node-v22.2.0-linux-x64.tar.xz",
+          "sha256": "4e723528b80983de062bf63e52cdff0c4873c52e858db49eb12f5a5871f30e7a"
+        }
+      ]
+    },
+    {
+      "name": "yarn",
+      "buildsystem": "simple",
+      "build-commands": [
+        "npm install --global yarn"
+      ]
+    },
+    {
+      "name": "opencv",
+      "buildsystem": "cmake",
+      "config-opts": [
+        "-DCMAKE_BUILD_TYPE=Release",
+        "-DBUILD_EXAMPLES=OFF",
+        "-DBUILD_TESTS=OFF",
+        "-DBUILD_opencv_apps=OFF",
+        "-DBUILD_opencv_js=OFF",
+        "-DBUILD_opencv_python2=OFF",
+        "-DBUILD_opencv_python3=OFF",
+        "-DWITH_EGL=ON",
+        "-DWITH_OPENGL=ON"
+      ],
+      "sources": [
+        {
+          "type": "archive",
+          "url": "https://github.com/opencv/opencv/archive/4.6.0.tar.gz",
+          "sha256": "1ec1cba4c82555fe4d6caf7f9243550303b66453ae03102434fe5767c51fead9"
+        }
+      ]
+    },
+    {
+      "name": "auraseek",
+      "buildsystem": "simple",
+      "build-commands": [
+        "yarn install --frozen-lockfile",
+        "yarn build",
+        "cd src-tauri && cargo build --release",
+        "install -D src-tauri/target/release/auraseek /app/bin/auraseek",
+        "install -D -m 644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.aienthusiasm.auraseek.png",
+        "install -D -m 644 com.aienthusiasm.auraseek.desktop /app/share/applications/com.aienthusiasm.auraseek.desktop"
+      ],
+      "sources": [
+        {
+          "type": "dir",
+          "path": "."
+        }
+      ]
+    }
+  ]
+}

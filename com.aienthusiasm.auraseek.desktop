@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AuraSeek
+Comment=AI-powered offline photo search and face identification
+Exec=auraseek
+Icon=com.aienthusiasm.auraseek
+Terminal=false
+Categories=Utility;Graphics;
+Keywords=Photo;Search;AI;Face;Offline;

@@ -118,6 +118,26 @@ pub fn run() {
 }
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    {
+        // 1. Detect if we are running inside an AppImage container
+        if let Ok(appdir) = std::env::var("APPDIR") {
+            // Fix WebKitGTK Process Paths dynamically
+            let webkit_path = format!("{}/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1", appdir);
+            let layout_path = format!("{}/usr/share/webkit2gtk-4.1", appdir);
+            std::env::set_var("WEBKIT_EXEC_PATH", &webkit_path);
+            std::env::set_var("WEBKIT_EXTRA_LAYOUT_PATH", &layout_path);
+
+            // Fix sandbox conflict in nested container environments
+            std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
+        }
+
+        // 2. Safe Wayland EGL fallback setup
+        if std::env::var("GDK_BACKEND").is_err() {
+            std::env::set_var("GDK_BACKEND", "wayland,x11");
+        }
+    }
+
     let _ = dotenvy::dotenv();
     let cfg = AppConfig::global().clone();
     let log_path = cfg.log_path.to_string_lossy().to_string();
