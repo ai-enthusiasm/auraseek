@@ -64,7 +64,7 @@
         {
           "type": "archive",
           "url": "https://github.com/opencv/opencv/archive/4.6.0.tar.gz",
-          "sha256": "1ec1cba4c82555fe4d6caf7f9243550303b66453ae03102434fe5767c51fead9"
+          "sha256": "1ec1cba65f9f20fe5a41fda1586e01c70ea0c9a6d7b67c9e13edf0cfe2239277"
         }
       ]
     },
