@@ -29,7 +29,7 @@
       "name": "node",
       "buildsystem": "simple",
       "build-commands": [
-        "tar -C /app --strip-components=1 -xf node-v22.2.0-linux-x64.tar.xz"
+        "tar -C /app --strip-components=1 --no-same-owner -xf node-v22.2.0-linux-x64.tar.xz"
       ],
       "sources": [
         {
