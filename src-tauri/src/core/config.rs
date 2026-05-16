@@ -3,6 +3,37 @@ use std::sync::OnceLock;
 
 static GLOBAL_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
+pub const MODEL_VISION_REL: &str = "models/vision_aura.onnx";
+pub const MODEL_TEXT_REL: &str = "models/text_aura.onnx";
+pub const MODEL_YOLO_REL: &str = "models/yolo26s-seg.onnx";
+pub const MODEL_YUNET_REL: &str = "models/face_detection_yunet_2022mar.onnx";
+pub const MODEL_SFACE_REL: &str = "models/face_recognition_sface_2021dec.onnx";
+pub const TOKENIZER_VOCAB_REL: &str = "tokenizer/vocab.txt";
+pub const TOKENIZER_BPE_REL: &str = "tokenizer/bpe.codes";
+pub const FONT_DEJAVU_REL: &str = "fonts/DejaVuSans.ttf";
+
+pub const MODEL_VISION_NAME: &str = "vision_aura.onnx";
+pub const MODEL_TEXT_NAME: &str = "text_aura.onnx";
+pub const MODEL_YOLO_NAME: &str = "yolo26s-seg.onnx";
+pub const MODEL_YUNET_NAME: &str = "face_detection_yunet_2022mar.onnx";
+pub const MODEL_SFACE_NAME: &str = "face_recognition_sface_2021dec.onnx";
+pub const TOKENIZER_VOCAB_NAME: &str = "vocab.txt";
+pub const TOKENIZER_BPE_NAME: &str = "bpe.codes";
+pub const FONT_DEJAVU_NAME: &str = "DejaVuSans.ttf";
+
+pub const AI_ASSETS_BASE_URL: &str = "https://github.com/ai-enthusiasm/auraseek/releases/download/v1.0.0";
+
+pub const AI_ASSETS: &[(&str, &str)] = &[
+    (MODEL_TEXT_NAME, MODEL_TEXT_REL),
+    (MODEL_VISION_NAME, MODEL_VISION_REL),
+    (MODEL_SFACE_NAME, MODEL_SFACE_REL),
+    (MODEL_YUNET_NAME, MODEL_YUNET_REL),
+    (MODEL_YOLO_NAME, MODEL_YOLO_REL),
+    (TOKENIZER_BPE_NAME, TOKENIZER_BPE_REL),
+    (TOKENIZER_VOCAB_NAME, TOKENIZER_VOCAB_REL),
+    (FONT_DEJAVU_NAME, FONT_DEJAVU_REL),
+];
+
 #[derive(Debug, Clone)]
 pub enum DevicePreference {
     Cpu,
@@ -69,8 +100,8 @@ impl Default for AppConfig {
         Self {
             model_dir: data_dir.clone(),
             sqlite_path: data_dir.join("auraseek.sqlite3"),
-            qdrant_port: 6334,
-            qdrant_http_port: 6333,
+            qdrant_port: 6354,
+            qdrant_http_port: 6353,
             qdrant_dashboard_enabled: false,
             qdrant_storage_dir: data_dir.join("qdrant_storage"),
             qdrant_collection: "media_embeddings".to_string(),
@@ -79,17 +110,17 @@ impl Default for AppConfig {
 
             face_detection_threshold: 0.912,
             face_identity_threshold: 0.351,
-            face_nms_iou_threshold: 0.351,
+            face_nms_iou_threshold: 0.8,
             face_top_k: 5000,
-            yolo_confidence: 0.25,
-            yolo_iou: 0.45,
-            search_threshold: 0.256,
+            yolo_confidence: 0.5,
+            yolo_iou: 0.9,
+            search_threshold: 0.386,
             search_limit: 10000,
             max_batch_size: 1,
 
             video_scene_threshold: 0.11,
 
-            duplicate_score_threshold: 0.92,
+            duplicate_score_threshold: 0.96,
             duplicate_scroll_page_size: 256,
 
             text_query_max_len: 64,

@@ -68,9 +68,12 @@ export default function ModelDownloadScreen({ event }: Props) {
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  const safeFileIndex = event ? Math.max(1, event.file_index) : 1;
   const overall =
     event && event.file_total > 0
-      ? ((event.file_index - 1) + event.progress) / event.file_total
+      ? ((safeFileIndex - 1) + event.progress) / event.file_total
+      : event && event.progress >= 1.0
+      ? 1.0
       : 0;
 
   const overallPct = Math.round(overall * 100);

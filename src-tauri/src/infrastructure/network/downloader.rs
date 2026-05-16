@@ -6,21 +6,8 @@ use tauri::{AppHandle, Emitter};
 use tokio::fs;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::core::config::{AI_ASSETS, AI_ASSETS_BASE_URL};
 use crate::infrastructure::database::QdrantService;
-
-const BASE_URL: &str =
-    "https://github.com/ai-enthusiasm/auraseek/releases/download/v1.0.0";
-
-const ASSETS: &[(&str, &str)] = &[
-    ("text_visclir.onnx",                "models/text_visclir.onnx"),
-    ("vision_visclir.onnx",              "models/vision_visclir.onnx"),
-    ("face_recognition_sface_2021dec.onnx", "models/face_recognition_sface_2021dec.onnx"),
-    ("face_detection_yunet_2022mar.onnx",   "models/face_detection_yunet_2022mar.onnx"),
-    ("yolo26n-seg.onnx",                    "models/yolo26n-seg.onnx"),
-    ("bpe.codes",                           "tokenizer/bpe.codes"),
-    ("vocab.txt",                           "tokenizer/vocab.txt"),
-    ("DejaVuSans.ttf",                      "fonts/DejaVuSans.ttf"),
-];
 
 static IS_DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
@@ -38,7 +25,7 @@ pub struct DownloadProgress {
 }
 
 pub fn all_models_present(data_dir: &Path) -> bool {
-    let models_ok = ASSETS.iter().all(|(_, rel)| data_dir.join(rel).exists());
+    let models_ok = AI_ASSETS.iter().all(|(_, rel)| data_dir.join(rel).exists());
     let dashboard_enabled = crate::core::config::AppConfig::global().qdrant_dashboard_enabled;
     let qdrant_ok = QdrantService::assets_present(data_dir, dashboard_enabled);
     models_ok && qdrant_ok
@@ -74,7 +61,7 @@ impl ModelDownloader {
             return Err(e);
         }
 
-        let needed: Vec<(&str, PathBuf)> = ASSETS
+        let needed: Vec<(&str, PathBuf)> = AI_ASSETS
             .iter()
             .filter_map(|(name, rel)| {
                 let dest = data_dir.join(rel);
@@ -84,6 +71,17 @@ impl ModelDownloader {
 
         if needed.is_empty() {
             crate::log_info!("✅ All model assets already present");
+            let _ = app.emit("model-download-progress", DownloadProgress {
+                file: "done".into(),
+                progress: 1.0,
+                message: "Sẵn sàng khởi động AI Engine...".into(),
+                done: true,
+                error: String::new(),
+                file_index: 0,
+                file_total: 0,
+                bytes_done: 0,
+                bytes_total: 0,
+            });
             return Ok(());
         }
 
@@ -100,7 +98,7 @@ impl ModelDownloader {
                     .with_context(|| format!("create dir {}", parent.display()))?;
             }
 
-            let url = format!("{}/{}", BASE_URL, name);
+            let url = format!("{}/{}", AI_ASSETS_BASE_URL, name);
             crate::log_info!("📥 [{}/{}] {}", file_index, total, name);
 
             let _ = app.emit("model-download-progress", DownloadProgress {

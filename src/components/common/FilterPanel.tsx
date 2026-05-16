@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Filter, Calendar, Users, FileType, Tag, X, Loader2, SearchX } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { ActiveFilters } from "@/App";
-import { AuraSeekApi, type PersonGroup } from "@/lib/api";
+import { AuraSeekApi, type PersonGroup, localFileUrl, streamFileUrl } from "@/lib/api";
 
 const MONTHS = [
     { label: "Tháng 1", value: 1 }, { label: "Tháng 2", value: 2 },
@@ -25,6 +25,87 @@ interface FilterPanelProps {
     onOpenChange: (open: boolean) => void;
     activeFilters?: ActiveFilters;
     onFiltersChange?: (filters: ActiveFilters) => void;
+}
+
+function MiniFaceCropAvatar({
+    rawPath,
+    bbox,
+}: {
+    rawPath: string;
+    bbox: { x: number; y: number; w: number; h: number } | null;
+}) {
+    const [bgStyle, setBgStyle] = useState<React.CSSProperties | null>(null);
+
+    useEffect(() => {
+        if (!rawPath) return;
+
+        let cancelled = false;
+        const resolveUrl = async () => {
+            let url = "";
+            if (rawPath.startsWith("/") || rawPath.match(/^[A-Za-z]:\\/)) {
+                url = await streamFileUrl(rawPath);
+            } else {
+                url = localFileUrl(rawPath);
+            }
+            if (cancelled) return;
+
+            const img = new Image();
+            img.onload = () => {
+                if (cancelled) return;
+                const naturalW = img.naturalWidth;
+                const naturalH = img.naturalHeight;
+
+                if (!bbox || !naturalW || !naturalH) {
+                    setBgStyle({
+                        backgroundImage: `url("${url}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                    });
+                    return;
+                }
+
+                const faceCx = bbox.x + bbox.w / 2;
+                const faceCy = bbox.y + bbox.h / 2;
+                const cropSize = Math.max(bbox.w, bbox.h) * 2;
+
+                let cropX = faceCx - cropSize / 2;
+                let cropY = faceCy - cropSize / 2;
+                const clampedSize = Math.min(cropSize, naturalW, naturalH);
+                cropX = Math.max(0, Math.min(cropX, naturalW - clampedSize));
+                cropY = Math.max(0, Math.min(cropY, naturalH - clampedSize));
+
+                const targetSize = 20; // 20px for w-5 h-5
+                const scale = targetSize / clampedSize;
+                const bgW = naturalW * scale;
+                const bgH = naturalH * scale;
+
+                setBgStyle({
+                    backgroundImage: `url("${url}")`,
+                    backgroundSize: `${bgW}px ${bgH}px`,
+                    backgroundPosition: `${-cropX * scale}px ${-cropY * scale}px`,
+                    backgroundRepeat: "no-repeat",
+                });
+            };
+            img.src = url;
+        };
+
+        resolveUrl();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [rawPath, bbox]);
+
+    if (!bgStyle) {
+        return <div className="w-5 h-5 rounded-full bg-muted animate-pulse shrink-0" />;
+    }
+
+    return (
+        <div
+            className="w-5 h-5 rounded-full shrink-0 border border-border/10"
+            style={bgStyle}
+        />
+    );
 }
 
 export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange }: FilterPanelProps) {
@@ -271,10 +352,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                                 }`}
                                         >
                                             {person.thumbnail && (
-                                                <img
-                                                    src={`asset://localhost/${encodeURIComponent(person.thumbnail).replace(/%2F/g, "/")}`}
-                                                    className="w-5 h-5 rounded-full object-cover"
-                                                    alt=""
+                                                <MiniFaceCropAvatar
+                                                    rawPath={person.thumbnail}
+                                                    bbox={person.face_bbox}
                                                 />
                                             )}
                                             <span>{displayName}</span>

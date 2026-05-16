@@ -7,18 +7,49 @@ pub fn available_ram_percent() -> f64 {
     sys.refresh_memory();
 
     let total = sys.total_memory() as f64;
-    let available = sys.available_memory() as f64;
-    let free = sys.free_memory() as f64;
-    let used = sys.used_memory() as f64;
 
-    let avail = if available > 0.0 {
-        available
-    } else if free > 0.0 {
-        free
-    } else if total > 0.0 {
-        (total - used).max(0.0)
+    let avail = if cfg!(target_os = "macos") {
+        unsafe {
+            let mut count = libc::HOST_VM_INFO64_COUNT as libc::mach_msg_type_number_t;
+            let mut stats: libc::vm_statistics64 = std::mem::zeroed();
+            let port = libc::mach_host_self();
+            if libc::host_statistics64(
+                port,
+                libc::HOST_VM_INFO64,
+                &mut stats as *mut _ as *mut libc::integer_t,
+                &mut count,
+            ) == libc::KERN_SUCCESS
+            {
+                let page_size = libc::sysconf(libc::_SC_PAGESIZE) as u64;
+                let available_pages = stats.free_count as u64
+                    + stats.inactive_count as u64
+                    + stats.purgeable_count as u64;
+                (available_pages * page_size) as f64
+            } else {
+                sys.available_memory() as f64
+            }
+        }
+    } else if cfg!(target_os = "linux") {
+        if let Ok(content) = std::fs::read_to_string("/proc/meminfo") {
+            let mut mem_avail = None;
+            for line in content.lines() {
+                if line.starts_with("MemAvailable:") {
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    if parts.len() >= 2 {
+                        if let Ok(kb) = parts[1].parse::<u64>() {
+                            mem_avail = Some((kb * 1024) as f64);
+                        }
+                    }
+                    break;
+                }
+            }
+            mem_avail.unwrap_or(sys.available_memory() as f64)
+        } else {
+            sys.available_memory() as f64
+        }
     } else {
-        0.0
+        // Windows uses sys.available_memory() directly as it wraps GlobalMemoryStatusEx ullAvailPhys
+        sys.available_memory() as f64
     };
 
     if total > 0.0 {
@@ -122,7 +153,7 @@ pub async fn start_qdrant_sidecar(app: &tauri::AppHandle) -> Result<(), String> 
             } else {
                 crate::log_info!("🗄️  Qdrant sidecar started | grpc={} dashboard=disabled", started.grpc_port);
             }
-            *state.qdrant_child.lock().unwrap() = Some(started.child);
+            *state.qdrant_child.lock().unwrap() = started.child;
             Ok(())
         }
         Err(e) => {

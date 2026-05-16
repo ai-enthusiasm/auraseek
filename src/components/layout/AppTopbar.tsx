@@ -11,6 +11,7 @@ import { FilterPanel } from "@/components/common/FilterPanel";
 import { useState, useRef, useCallback, useEffect } from "react";
 import type { ActiveFilters } from "@/App";
 import { AuraSeekApi, type SyncStatus } from "@/lib/api";
+import { AddToAlbumDialog } from "@/components/ui/AddToAlbumDialog";
 
 interface AppTopbarProps {
   totalImages?: number;
@@ -53,6 +54,7 @@ export function AppTopbar({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const composingRef = useRef(false);
+  const [showAddToAlbum, setShowAddToAlbum] = useState(false);
 
   // Sync external search query clears into the uncontrolled input
   useEffect(() => {
@@ -138,9 +140,18 @@ export function AppTopbar({
         <div className="flex-1" />
         <div className="flex items-center gap-2 text-primary">
           <Button variant="ghost" size="icon" className="rounded-full hover:bg-primary/20 text-primary"><Share2 className="w-5 h-5" /></Button>
-          <Button variant="ghost" size="icon" className="rounded-full hover:bg-primary/20 text-primary"><Plus className="w-5 h-5" /></Button>
+          <Button variant="ghost" size="icon" onClick={() => setShowAddToAlbum(true)} className="rounded-full hover:bg-primary/20 text-primary"><Plus className="w-5 h-5" /></Button>
           <Button variant="ghost" size="icon" className="rounded-full hover:bg-primary/20 text-primary"><Trash2 className="w-5 h-5" /></Button>
         </div>
+        
+        <AddToAlbumDialog 
+          isOpen={showAddToAlbum} 
+          onClose={() => setShowAddToAlbum(false)} 
+          mediaIds={Array.from(selectedIds)} 
+          onSuccess={() => {
+            clearSelection();
+          }} 
+        />
       </div>
     );
   }

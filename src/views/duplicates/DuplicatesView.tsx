@@ -132,7 +132,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
     const isVideo = mediaType === "video";
 
     return (
-        <div className="flex-1 overflow-y-auto px-6 py-8 bg-background/50">
+        <div className="flex-1 overflow-y-auto px-6 py-8 bg-background/50 h-full will-change-scroll">
             <div className="max-w-5xl mx-auto space-y-8">
 
                 {/* Header */}

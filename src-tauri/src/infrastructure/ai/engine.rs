@@ -9,7 +9,10 @@ use super::vision::{
     letterbox_640_from_image, preprocess_aura_from_image,
     DetectionRecord,
 };
-use crate::core::config::AppConfig;
+use crate::core::config::{
+    AppConfig, MODEL_VISION_REL, MODEL_TEXT_REL, MODEL_YOLO_REL, MODEL_YUNET_REL, MODEL_SFACE_REL,
+    TOKENIZER_VOCAB_REL, TOKENIZER_BPE_REL,
+};
 use crate::{log_info, log_warn};
 use opencv::{
     imgcodecs::{imdecode, IMREAD_COLOR, IMREAD_IGNORE_ORIENTATION},
@@ -25,26 +28,26 @@ pub struct EngineOutput {
 
 fn default_config() -> EngineConfig {
     EngineConfig {
-        vision_path:  "assets/models/vision_visclir.onnx".into(),
-        text_path:    "assets/models/text_visclir.onnx".into(),
-        yolo_path:    "assets/models/yolo26n-seg.onnx".into(),
-        yunet_path:   "assets/models/face_detection_yunet_2022mar.onnx".into(),
-        sface_path:   "assets/models/face_recognition_sface_2021dec.onnx".into(),
-        vocab_path:   "assets/tokenizer/vocab.txt".into(),
-        bpe_path:     "assets/tokenizer/bpe.codes".into(),
+        vision_path:  format!("assets/{}", MODEL_VISION_REL),
+        text_path:    format!("assets/{}", MODEL_TEXT_REL),
+        yolo_path:    format!("assets/{}", MODEL_YOLO_REL),
+        yunet_path:   format!("assets/{}", MODEL_YUNET_REL),
+        sface_path:   format!("assets/{}", MODEL_SFACE_REL),
+        vocab_path:   format!("assets/{}", TOKENIZER_VOCAB_REL),
+        bpe_path:     format!("assets/{}", TOKENIZER_BPE_REL),
         face_db_path: "assets/face_db".into(),
     }
 }
 
 pub fn config_from_model_dir(model_dir: &str) -> EngineConfig {
     EngineConfig {
-        vision_path:  format!("{}/models/vision_visclir.onnx", model_dir),
-        text_path:    format!("{}/models/text_visclir.onnx", model_dir),
-        yolo_path:    format!("{}/models/yolo26n-seg.onnx", model_dir),
-        yunet_path:   format!("{}/models/face_detection_yunet_2022mar.onnx", model_dir),
-        sface_path:   format!("{}/models/face_recognition_sface_2021dec.onnx", model_dir),
-        vocab_path:   format!("{}/tokenizer/vocab.txt", model_dir),
-        bpe_path:     format!("{}/tokenizer/bpe.codes", model_dir),
+        vision_path:  format!("{}/{}", model_dir, MODEL_VISION_REL),
+        text_path:    format!("{}/{}", model_dir, MODEL_TEXT_REL),
+        yolo_path:    format!("{}/{}", model_dir, MODEL_YOLO_REL),
+        yunet_path:   format!("{}/{}", model_dir, MODEL_YUNET_REL),
+        sface_path:   format!("{}/{}", model_dir, MODEL_SFACE_REL),
+        vocab_path:   format!("{}/{}", model_dir, TOKENIZER_VOCAB_REL),
+        bpe_path:     format!("{}/{}", model_dir, TOKENIZER_BPE_REL),
         face_db_path: format!("{}/face_db", model_dir),
     }
 }
@@ -63,13 +66,13 @@ pub struct EngineConfig {
 impl EngineConfig {
     pub fn new_with_dir(base: &std::path::Path) -> Self {
         Self {
-            vision_path: base.join("models/vision_visclir.onnx").to_string_lossy().into_owned(),
-            text_path: base.join("models/text_visclir.onnx").to_string_lossy().into_owned(),
-            yolo_path: base.join("models/yolo26n-seg.onnx").to_string_lossy().into_owned(),
-            yunet_path: base.join("models/face_detection_yunet_2022mar.onnx").to_string_lossy().into_owned(),
-            sface_path: base.join("models/face_recognition_sface_2021dec.onnx").to_string_lossy().into_owned(),
-            vocab_path: base.join("tokenizer/vocab.txt").to_string_lossy().into_owned(),
-            bpe_path: base.join("tokenizer/bpe.codes").to_string_lossy().into_owned(),
+            vision_path: base.join(MODEL_VISION_REL).to_string_lossy().into_owned(),
+            text_path: base.join(MODEL_TEXT_REL).to_string_lossy().into_owned(),
+            yolo_path: base.join(MODEL_YOLO_REL).to_string_lossy().into_owned(),
+            yunet_path: base.join(MODEL_YUNET_REL).to_string_lossy().into_owned(),
+            sface_path: base.join(MODEL_SFACE_REL).to_string_lossy().into_owned(),
+            vocab_path: base.join(TOKENIZER_VOCAB_REL).to_string_lossy().into_owned(),
+            bpe_path: base.join(TOKENIZER_BPE_REL).to_string_lossy().into_owned(),
             face_db_path: base.join("face_db").to_string_lossy().into_owned(),
         }
     }
