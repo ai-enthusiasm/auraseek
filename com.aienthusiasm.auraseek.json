@@ -1,10 +1,11 @@
 {
   "app-id": "com.aienthusiasm.auraseek",
   "runtime": "org.gnome.Platform",
-  "runtime-version": "46",
+  "runtime-version": "47",
   "sdk": "org.gnome.Sdk",
   "sdk-extensions": [
-    "org.freedesktop.Sdk.Extension.rust-stable"
+    "org.freedesktop.Sdk.Extension.rust-stable",
+    "org.freedesktop.Sdk.Extension.llvm18"
   ],
   "command": "auraseek",
   "finish-args": [
@@ -14,14 +15,14 @@
     "--socket=x11",
     "--socket=pulseaudio",
     "--share=network",
-    "--filesystem=xdg-user-dirs-configuration",
     "--filesystem=host",
     "--device=dri"
   ],
   "build-options": {
-    "append-path": "/usr/lib/sdk/rust-stable/bin",
+    "append-path": "/usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm18/bin",
     "env": {
-      "CARGO_HOME": "/run/build/auraseek/cargo"
+      "CARGO_HOME": "/run/build/auraseek/cargo",
+      "LIBCLANG_PATH": "/usr/lib/sdk/llvm18/lib"
     }
   },
   "modules": [
@@ -55,11 +56,13 @@
     },
     {
       "name": "opencv",
-      "buildsystem": "cmake",
+      "buildsystem": "cmake-ninja",
+      "builddir": true,
       "config-opts": [
         "-DCMAKE_BUILD_TYPE=Release",
         "-DBUILD_EXAMPLES=OFF",
         "-DBUILD_TESTS=OFF",
+        "-DBUILD_PERF_TESTS=OFF",
         "-DBUILD_opencv_apps=OFF",
         "-DBUILD_opencv_js=OFF",
         "-DBUILD_opencv_python2=OFF",
@@ -78,12 +81,15 @@
     {
       "name": "auraseek",
       "buildsystem": "simple",
+      "build-options": {
+        "build-args": ["--share=network"]
+      },
       "build-commands": [
         "yarn install --frozen-lockfile",
         "yarn build",
         "cd src-tauri && cargo build --release",
         "install -D src-tauri/target/release/auraseek /app/bin/auraseek",
-        "install -D -m 644 icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.aienthusiasm.auraseek.png",
+        "install -D -m 644 src-tauri/icons/128x128.png /app/share/icons/hicolor/128x128/apps/com.aienthusiasm.auraseek.png",
         "install -D -m 644 com.aienthusiasm.auraseek.desktop /app/share/applications/com.aienthusiasm.auraseek.desktop"
       ],
       "sources": [
