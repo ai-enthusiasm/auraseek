@@ -80,10 +80,10 @@ export function TrashView() {
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden">
-      <div className="flex items-center justify-between px-6 py-4 border-b border-white/5 bg-slate-900">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-zinc-200 bg-white">
         <div>
-          <h1 className="text-xl font-semibold text-white">Thùng rác</h1>
-          <p className="text-sm text-muted-foreground mt-1">Các mục đã xoá sẽ nằm ở đây 30 ngày trước khi bị xoá vĩnh viễn.</p>
+          <h1 className="text-xl font-semibold text-zinc-900">Thùng rác</h1>
+          <p className="text-sm text-zinc-500 mt-1">Các mục đã xoá sẽ nằm ở đây 30 ngày trước khi bị xoá vĩnh viễn.</p>
         </div>
         <Button 
           variant="destructive" 
@@ -96,7 +96,7 @@ export function TrashView() {
         </Button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8">
+      <div className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 bg-white will-change-scroll">
         {isLoading && (
           <div className="space-y-6">
             <div className="space-y-3 animate-pulse">
@@ -121,7 +121,7 @@ export function TrashView() {
         <div className="space-y-6 sm:space-y-8 mt-2">
           {sections.map((section) => (
             <section key={section.id} className="space-y-2 sm:space-y-3">
-              <div className="sticky top-3 z-10 mb-1 inline-flex rounded-full border border-white/10 bg-slate-900/70 px-3 py-1 text-xs font-medium text-slate-100 shadow-lg backdrop-blur dark:bg-slate-900/70">
+              <div className="sticky top-3 z-10 mb-1 inline-flex rounded-full border border-zinc-200 bg-white/90 px-3 py-1 text-xs font-semibold text-zinc-600 shadow-sm backdrop-blur">
                 {section.label}
               </div>
               <PhotoGrid

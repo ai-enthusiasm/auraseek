@@ -132,7 +132,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
     const isVideo = mediaType === "video";
 
     return (
-        <div className="flex-1 overflow-y-auto px-6 py-8 bg-background/50 h-full will-change-scroll">
+        <div className="flex-1 overflow-y-auto px-6 py-8 bg-white h-full will-change-scroll">
             <div className="max-w-5xl mx-auto space-y-8">
 
                 {/* Header */}
@@ -143,41 +143,38 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                                 ? <Film className="w-6 h-6 text-primary" />
                                 : <ImageIcon className="w-6 h-6 text-primary" />}
                         </div>
-                        <h1 className="text-2xl font-semibold tracking-tight">
+                        <h1 className="text-2xl font-semibold tracking-tight text-zinc-900">
                             {isVideo ? "Video trùng lặp" : "Ảnh trùng lặp"}
                         </h1>
-                        <p className="text-muted-foreground text-sm max-w-lg">
+                        <p className="text-zinc-500 text-sm max-w-lg">
                             {isVideo
                                 ? "Hệ thống tự động quét và phân loại các video giống nhau giúp bạn dọn dẹp thư viện dễ dàng hơn."
                                 : "Hệ thống tự động quét và nhóm các bức ảnh giống hoặc tương tự nhau, giúp bạn có thể chọn giữ lại ảnh đẹp nhất."}
                         </p>
                     </div>
                     <div className="flex gap-2">
-                        <Button
-                            variant="outline"
-                            size="sm"
+                        <button
                             onClick={fetchDuplicates}
                             disabled={isLoading}
-                            className="rounded-full gap-2 shrink-0"
+                            className="h-9 px-4 text-sm font-medium rounded-full flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
                         >
                             <RefreshCw className={`w-4 h-4 ${isLoading ? "animate-spin" : ""}`} />
                             Quét lại
-                        </Button>
-                        <Button 
+                        </button>
+                        <button 
                             disabled={isLoading || groups.length === 0 || totalDelete === 0} 
                             onClick={() => setConfirmAllOpen(true)}
-                            className="rounded-full shadow-lg shadow-primary/10 gap-2"
-                            variant="destructive"
+                            className="h-9 px-4 text-sm font-medium rounded-full flex items-center gap-2 bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm"
                         >
                             {isDeletingAll ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <Trash2 className="w-4 h-4 mr-2" />}
                             Xoá tất cả {totalDelete} mục đã chọn
-                        </Button>
+                        </button>
                     </div>
                 </div>
 
                 {/* Summary bar */}
                 {!isLoading && !error && groups.length > 0 && (
-                    <div className="flex items-center justify-between p-4 glass rounded-2xl border border-border/20 gap-4 flex-wrap shadow-soft transition-smooth">
+                    <div className="flex items-center justify-between p-4 bg-white rounded-2xl border border-zinc-200 gap-4 flex-wrap shadow-sm transition-smooth">
                         <div className="flex gap-6">
                             <div>
                                 <div className="text-xs text-muted-foreground mb-0.5">Nhóm trùng lặp</div>
@@ -228,10 +225,10 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                 {!isLoading && !error && groups.length === 0 && (
                     <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
                         <div className="text-5xl mb-2">✨</div>
-                        <div className="font-semibold text-xl text-foreground">
+                        <div className="font-semibold text-xl text-zinc-900">
                             Không tìm thấy {isVideo ? "video" : "ảnh"} trùng lặp
                         </div>
-                        <div className="text-sm text-muted-foreground">
+                        <div className="text-sm text-zinc-500">
                             {isVideo ? "Thư viện video" : "Thư viện ảnh"} của bạn đang rất gọn gàng.
                         </div>
                     </div>
@@ -247,17 +244,17 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
 
                             return (
                                 <div key={group.group_id}
-                                    className="bg-background rounded-2xl border border-border/30 overflow-hidden shadow-soft transition-smooth"
+                                    className="bg-white rounded-2xl border border-zinc-200 overflow-hidden shadow-sm transition-smooth"
                                 >
                                     {/* Group header */}
                                     <div
-                                        className="flex items-center justify-between px-5 py-4 bg-muted/10 cursor-pointer select-none"
+                                        className="flex items-center justify-between px-5 py-4 bg-zinc-50 cursor-pointer select-none"
                                         onClick={() => toggleExpand(group.group_id)}
                                     >
                                         <div className="flex items-center gap-3 min-w-0">
                                             <CopySlash className="w-4 h-4 text-muted-foreground shrink-0" />
                                             <div className="min-w-0">
-                                                <div className="text-sm font-medium text-foreground truncate">
+                                                <div className="text-sm font-medium text-zinc-900 truncate">
                                                     Nhóm trùng lặp ({group.items.length} {isVideo ? "video" : "ảnh"})
                                                 </div>
                                                 <div className="text-xs text-muted-foreground mt-0.5">
@@ -267,9 +264,8 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                                         </div>
                                         <div className="flex items-center gap-2 shrink-0">
                                             {deleteCount > 0 && (
-                                                <Button 
-                                                    variant="destructive" size="sm" 
-                                                    className="bg-destructive/10 text-destructive hover:bg-destructive hover:text-destructive-foreground border-destructive/20 rounded-xl"
+                                                <button 
+                                                    className="h-8 px-3 text-xs font-medium rounded-xl flex items-center bg-red-50 text-red-500 hover:bg-red-500 hover:text-white border border-red-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                                                     onClick={(e) => {
                                                         e.stopPropagation();
                                                         setTargetGroupId(group.group_id);
@@ -279,7 +275,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                                                 >
                                                     {deletingGroup === group.group_id ? <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1.5" />}
                                                     Xoá {markedForDelete[group.group_id]?.size ?? 0} bản sao
-                                                </Button>
+                                                </button>
                                             )}
                                             <ChevronDown className={`w-4 h-4 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`} />
                                         </div>
@@ -295,7 +291,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                                                 return (
                                                     <div
                                                         key={item.media_id}
-                                                        className="snap-start shrink-0 flex flex-col gap-2 cursor-pointer hover-lift group"
+                                                        className="snap-start shrink-0 flex flex-col gap-2 cursor-pointer transition-transform hover:-translate-y-1 group"
                                                         style={{ width: isVideo ? 240 : 176 }}
                                                         onClick={() => toggleMark(group.group_id, item.media_id)}
                                                     >

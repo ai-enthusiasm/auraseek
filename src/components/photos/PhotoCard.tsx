@@ -42,6 +42,7 @@ export function PhotoCard({
   const [displayH, setDisplayH] = useState(0);
 
   useEffect(() => {
+    if (!showBbox) return;
     const el = imgRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => {
@@ -50,7 +51,7 @@ export function PhotoCard({
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [showBbox]);
 
   const handleSelect = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -85,13 +86,13 @@ export function PhotoCard({
     <button
       type="button"
       onClick={selectionMode ? handleSelect : onClick}
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      className={cn("group relative block overflow-hidden bg-zinc-200 dark:bg-zinc-800 rounded-2xl shadow-sm transition-shadow hover:shadow-xl", className || "w-full h-full")}
+      onMouseEnter={() => { if (showBbox) setHovered(true); }}
+      onMouseLeave={() => { if (showBbox) setHovered(false); }}
+      className={cn("group relative block bg-zinc-200 dark:bg-zinc-800 transition-transform will-change-transform", className || "w-full h-full")}
     >
       <div className={cn(
-        "w-full h-full transition-all duration-300 ease-out relative",
-        isSelected && selectionMode ? "p-3" : "p-0"
+        "w-full h-full transition-[padding] duration-300 ease-out relative overflow-hidden",
+        isSelected && selectionMode ? "p-3 rounded-lg" : "p-0"
       )}>
 
         {/* ── Video — show static thumbnail image in grid ──────── */}
@@ -102,11 +103,12 @@ export function PhotoCard({
             src={photo.thumbnailUrl || photo.url}
             alt="Video"
             className={cn(
-              "h-full w-full select-none object-cover transition-transform duration-700 ease-out",
-              !(isSelected && selectionMode) && "group-hover:scale-110",
+              "h-full w-full select-none object-cover",
               isSelected && selectionMode && "rounded-xl"
             )}
             draggable={false}
+            loading="lazy"
+            decoding="async"
           />
           </div>
         ) : (
@@ -116,11 +118,12 @@ export function PhotoCard({
             src={photo.url}
             alt="Photo"
             className={cn(
-              "h-full w-full select-none object-cover transition-transform duration-700 ease-out",
-              !(isSelected && selectionMode) && "group-hover:scale-110",
+              "h-full w-full select-none object-cover",
               isSelected && selectionMode && "rounded-xl"
             )}
             draggable={false}
+            loading="lazy"
+            decoding="async"
           />
         )}
 
@@ -144,8 +147,8 @@ export function PhotoCard({
         )}
 
         {/* ── Video play badge ──────────────────────────────────── */}
-        {isVideo && !hovered && (
-          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+        {isVideo && (
+          <div className="absolute bottom-2 right-2 z-10 flex items-center gap-1 bg-black/60 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm transition-opacity group-hover:opacity-0">
             <Play className="w-2.5 h-2.5 fill-white" />
             <span>VIDEO</span>
           </div>
@@ -162,7 +165,7 @@ export function PhotoCard({
           role="button"
           onClick={handleSelect}
           className={cn(
-            "absolute left-2 top-2 z-10 rounded-full transition-all duration-200",
+            "absolute left-2 top-2 z-10 rounded-full transition-[opacity,transform] duration-200",
             isSelected ? "opacity-100 scale-100" : "opacity-0 group-hover:opacity-100 scale-95 hover:scale-100"
           )}
         >
@@ -179,7 +182,7 @@ export function PhotoCard({
         role="button"
         onClick={handleFavorite}
         className={cn(
-          "absolute right-2 top-2 z-10 rounded-full p-1 transition-all duration-200",
+          "absolute right-2 top-2 z-10 rounded-full p-1 transition-[opacity,transform] duration-200",
           isFavorite
             ? "opacity-100"
             : "opacity-0 group-hover:opacity-100 hover:scale-110"

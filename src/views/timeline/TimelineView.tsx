@@ -135,7 +135,7 @@ export function TimelineView({
     <div className="flex relative h-full flex-1 flex-col overflow-hidden">
       <div
         id="timeline-scroll-container"
-        className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 relative bg-white"
+        className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 relative bg-white will-change-scroll"
       >
         {/* Loading skeleton */}
         {isLoading && (
@@ -155,13 +155,13 @@ export function TimelineView({
 
         {/* Empty state */}
         {!isLoading && sections.length === 0 && (
-          <div className="flex flex-col items-center justify-center h-64 gap-4 text-muted-foreground opacity-60">
-            <div className="text-5xl">{mediaType === "video" ? "🎬" : "📷"}</div>
+          <div className="flex flex-col items-center justify-center h-64 gap-4 text-zinc-400">
+            <div className="text-5xl opacity-80">{mediaType === "video" ? "🎬" : "📷"}</div>
             <div className="text-center">
-              <p className="font-medium text-lg">
+              <p className="font-medium text-lg text-zinc-900">
                 {mediaType === "video" ? "Chưa có video nào" : "Chưa có ảnh nào"}
               </p>
-              <p className="text-sm mt-1">
+              <p className="text-sm mt-1 text-zinc-500">
                 Vào Cài đặt → Khởi chạy bộ quét AI để import {mediaType === "video" ? "video" : "ảnh"}
               </p>
             </div>
@@ -212,12 +212,12 @@ export function TimelineView({
                   }}
                 >
                   <div className={`transition-all w-full flex justify-end items-center`}>
-                    <div className={`text-[9px] sm:text-[10px] font-bold text-muted-foreground/70 group-hover/item:hidden ${isFirstOfYear ? 'block' : 'hidden'}`}>
+                    <div className={`text-[9px] sm:text-[10px] font-bold text-zinc-400 group-hover/item:hidden ${isFirstOfYear ? 'block' : 'hidden'}`}>
                       {year}
                     </div>
-                    <div className={`h-1 w-1 sm:h-1.5 sm:w-1.5 rounded-full bg-muted-foreground/30 group-hover/item:hidden ${isFirstOfYear ? 'hidden' : 'block mr-1'}`}></div>
+                    <div className={`h-1 w-1 sm:h-1.5 sm:w-1.5 rounded-full bg-zinc-300 group-hover/item:hidden ${isFirstOfYear ? 'hidden' : 'block mr-1'}`}></div>
 
-                    <div className="hidden group-hover/item:block text-[10px] sm:text-[11px] font-bold text-primary whitespace-nowrap">
+                    <div className="hidden group-hover/item:block text-[10px] sm:text-[11px] font-bold text-zinc-900 bg-zinc-100/80 px-2 py-0.5 rounded-md whitespace-nowrap">
                       thg {month} {year}
                     </div>
                   </div>

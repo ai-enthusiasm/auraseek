@@ -11,8 +11,8 @@ export function SpaceNodes() {
 
     let animationFrameId: number;
     let nodes: { x: number; y: number; vx: number; vy: number; radius: number }[] = [];
-    const numNodes = 70; // Tuỳ chỉnh mật độ
-    const connectionDistance = 140; // Khoảng cách nối dây
+    const numNodes = 30; // Tuỳ chỉnh mật độ
+    const connectionDistance = 100; // Khoảng cách nối dây
     const nodeSpeed = 0.4; // Tốc độ trôi
 
     const resize = () => {
@@ -88,7 +88,7 @@ export function SpaceNodes() {
   return (
     <canvas
       ref={canvasRef}
-      className="absolute inset-0 pointer-events-none opacity-15 mix-blend-screen z-[5]"
+      className="absolute inset-0 pointer-events-none opacity-20 z-[5]"
     />
   );
 }

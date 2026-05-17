@@ -190,7 +190,6 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
                             </div>
                             <div>
                                 <h3 className="text-base font-medium tracking-tight text-foreground">AuraSeek</h3>
-                                <p className="text-xs text-muted-foreground mt-0.5">Phiên bản 1.0.0 · SurrealDB + Local AI · Offline</p>
                             </div>
                         </div>
                     </div>

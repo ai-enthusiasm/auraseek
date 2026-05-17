@@ -173,25 +173,21 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
                     {!isInAnyMode ? (
                         <div className="flex items-center gap-2">
                             {manualAlbums.length > 0 && (
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
+                                <button
                                     onClick={() => { setDeleteMode(true); setDeleteSelectedIds(new Set()); }}
-                                    className="rounded-full h-9 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                                    className="h-9 px-4 text-sm font-medium rounded-full flex items-center gap-2 bg-white border border-zinc-200 text-zinc-600 hover:text-red-500 hover:border-red-200 hover:bg-red-50 transition-colors shadow-sm"
                                 >
                                     <Trash2 className="w-4 h-4 mr-2" />
                                     Xóa album
-                                </Button>
+                                </button>
                             )}
-                            <Button
-                                variant="outline"
-                                size="sm"
+                            <button
                                 onClick={handleStartCreate}
-                                className="rounded-full shadow-sm text-xs font-medium h-9 border-primary/20 hover:bg-primary/5 hover:text-primary transition-all pr-5"
+                                className="h-9 px-5 pr-6 text-sm font-bold rounded-full flex items-center shadow-sm bg-white border border-zinc-200 text-zinc-900 hover:bg-zinc-900 hover:text-white hover:border-zinc-900 transition-all"
                             >
                                 <Plus className="w-4 h-4 mr-2" />
                                 Album mới
-                            </Button>
+                            </button>
                         </div>
                     ) : selectionMode ? (
                         <div className="flex items-center gap-2">
@@ -204,19 +200,17 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
                         </div>
                     ) : (
                         <div className="flex items-center gap-2">
-                            <Button variant="ghost" size="sm" onClick={() => { setDeleteMode(false); setDeleteSelectedIds(new Set()); }} className="rounded-full h-9">
+                            <button onClick={() => { setDeleteMode(false); setDeleteSelectedIds(new Set()); }} className="h-9 px-4 text-sm font-medium rounded-full bg-white border border-zinc-200 text-zinc-700 hover:bg-zinc-100 transition-colors">
                                 Hủy
-                            </Button>
-                            <Button
-                                size="sm"
-                                variant="destructive"
+                            </button>
+                            <button
                                 disabled={deleteSelectedIds.size === 0 || isDeleting}
                                 onClick={() => setShowDeleteConfirm(true)}
-                                className="rounded-full h-9 px-6 font-bold"
+                                className="h-9 px-6 text-sm font-bold rounded-full flex items-center bg-red-500 text-white hover:bg-red-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                             >
                                 <Trash2 className="w-4 h-4 mr-2" />
                                 {isDeleting ? "Đang xóa..." : `Xóa (${deleteSelectedIds.size})`}
-                            </Button>
+                            </button>
                         </div>
                     )}
                 </div>
@@ -263,8 +257,8 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
                                         </div>
                                     </div>
                                 </div>
-                                <div className="font-bold text-[15px] tracking-tight truncate px-1">{col.title}</div>
-                                <div className="text-[12px] font-medium text-muted-foreground/70 px-1">{col.count} mục</div>
+                                <div className="font-bold text-[15px] tracking-tight truncate px-1 text-zinc-900">{col.title}</div>
+                                <div className="text-[12px] font-medium text-zinc-500 px-1">{col.count} mục</div>
                             </div>
                         ))}
 
@@ -310,8 +304,8 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
                                             </div>
                                         )}
                                     </div>
-                                    <div className="font-bold text-[15px] tracking-tight truncate px-1">{album.title}</div>
-                                    <div className="text-[12px] font-medium text-muted-foreground/70 px-1">{album.count} mục</div>
+                                    <div className="font-bold text-[15px] tracking-tight truncate px-1 text-zinc-900">{album.title}</div>
+                                    <div className="text-[12px] font-medium text-zinc-500 px-1">{album.count} mục</div>
                                 </div>
                             );
                         })}
@@ -323,8 +317,8 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
                                     <img src={album.coverUrl} className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-110" />
                                     <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-black/20 to-transparent opacity-60 group-hover:opacity-80 transition-opacity" />
                                 </div>
-                                <div className="font-bold text-[15px] tracking-tight truncate px-1">{album.title}</div>
-                                <div className="text-[12px] font-medium text-muted-foreground/70 px-1">{album.count} mục</div>
+                                <div className="font-bold text-[15px] tracking-tight truncate px-1 text-zinc-900">{album.title}</div>
+                                <div className="text-[12px] font-medium text-zinc-500 px-1">{album.count} mục</div>
                             </div>
                         ))}
                     </div>

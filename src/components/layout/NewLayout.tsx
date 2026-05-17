@@ -161,8 +161,8 @@ export function NewLayout({
     <div className="relative w-full h-screen overflow-hidden flex flex-col bg-white">
       
       {/* ═══════════════ DECORATIVE GLOW BLOBS ═══════════════ */}
-      <div className="absolute top-0 left-0 w-[400px] h-[400px] bg-red-500/10 blur-[120px] rounded-full -translate-x-1/2 -translate-y-1/2 pointer-events-none z-0" />
-      <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-blue-500/10 blur-[120px] rounded-full translate-x-1/2 -translate-y-1/2 pointer-events-none z-0" />
+      <div className="absolute top-0 left-0 w-[400px] h-[400px] rounded-full -translate-x-1/2 -translate-y-1/2 pointer-events-none z-0" style={{ background: "radial-gradient(circle, rgba(239, 68, 68, 0.1) 0%, transparent 70%)" }} />
+      <div className="absolute top-0 right-0 w-[400px] h-[400px] rounded-full translate-x-1/2 -translate-y-1/2 pointer-events-none z-0" style={{ background: "radial-gradient(circle, rgba(59, 130, 246, 0.1) 0%, transparent 70%)" }} />
 
       {/* ═══════════════ HEADER (260px) ═══════════════ */}
       <div className="relative shrink-0 overflow-visible flex flex-col justify-between" style={{ height: "280px", zIndex: 10 }}>
@@ -176,16 +176,16 @@ export function NewLayout({
         <SpaceNodes />
 
         {/* Aura Blobs for High-Tech feel */}
-        <div className="absolute w-[500px] h-[500px] rounded-full opacity-30 blur-[100px] -left-40 -top-40 pointer-events-none"
-             style={{ background: "radial-gradient(circle, #3e53f7 0%, transparent 70%)" }} />
-        <div className="absolute w-[400px] h-[400px] rounded-full opacity-20 blur-[80px] right-0 top-0 pointer-events-none"
-             style={{ background: "radial-gradient(circle, #ff2225 0%, transparent 70%)" }} />
+        <div className="absolute w-[350px] h-[350px] rounded-full opacity-20 -left-20 -top-20 pointer-events-none"
+             style={{ background: "radial-gradient(circle, rgba(62, 83, 247, 0.4) 0%, transparent 70%)" }} />
+        <div className="absolute w-[300px] h-[300px] rounded-full opacity-15 right-0 top-0 pointer-events-none"
+             style={{ background: "radial-gradient(circle, rgba(255, 34, 37, 0.4) 0%, transparent 70%)" }} />
 
         {/* Brand Row */}
         <div className="relative z-10 flex items-center h-26 px-3 pt-4">
           {/* Logo: Logo.png */}
           <div className="flex items-center gap-4 mt-18">
-            <div className="relative w-[200px] h-[200px] flex items-center justify-center shrink-0">
+            <div className="relative w-[260px] h-[260px] flex items-center justify-center shrink-0 scale-110 ml-4">
                <img src="/logo/Logo.png" alt="AuraSeek Logo" className="w-full h-full object-contain drop-shadow-[0_0_15px_rgba(255,255,255,0.2)]" />
             </div>
 
@@ -282,7 +282,7 @@ export function NewLayout({
                 {isSearching ? (
                   <Loader2 className="w-5 h-5 animate-spin text-primary" />
                 ) : (
-                  <Search className={cn("w-5 h-5 transition-colors duration-300", searchFocused ? "text-primary" : "text-zinc-400 group-hover:text-primary/70")} />
+                  <Search className={cn("w-5 h-5 transition-colors duration-300", searchFocused ? "text-zinc-900" : "text-zinc-500 group-hover:text-zinc-900")} />
                 )}
                 
                 <input
@@ -312,7 +312,7 @@ export function NewLayout({
                       <X className="w-4 h-4" />
                     </button>
                   )}
-                  <button onClick={() => fileInputRef.current?.click()} className="rounded-full p-2 text-zinc-400 hover:text-primary transition" title="Tìm kiếm theo hình ảnh">
+                  <button onClick={() => fileInputRef.current?.click()} className="rounded-full p-2 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-300/50 transition" title="Tìm kiếm theo hình ảnh">
                     <Upload className="w-5 h-5" />
                   </button>
                   <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageUpload} />
@@ -320,7 +320,7 @@ export function NewLayout({
                     variant="ghost" 
                     size="icon"
                     onClick={() => setShowFilters(true)}
-                    className={cn("rounded-full w-10 h-10 transition-colors relative", hasActiveFilters ? "text-primary bg-primary/10" : "text-zinc-400 hover:text-primary hover:bg-zinc-100/50")}
+                    className={cn("rounded-full w-10 h-10 transition-colors relative", hasActiveFilters ? "text-primary bg-primary/10" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-300/50")}
                   >
                     <Filter className="w-5 h-5" />
                     {hasActiveFilters && <div className="absolute top-2 right-2 w-2 h-2 bg-primary rounded-full shadow-[0_0_10px_rgba(var(--primary),0.5)]" />}
@@ -358,16 +358,16 @@ export function NewLayout({
                 <Button 
                   variant="ghost" 
                   size="icon" 
-                  className="w-14 h-14 rounded-full bg-gray-200 border border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:bg-gray-900 hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5 text-zinc-600 hover:text-primary transition-all duration-300 active:scale-95"
+                  className="w-14 h-14 rounded-full bg-gray-200 border border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:bg-zinc-300 hover:border-zinc-400 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5 text-zinc-600 hover:text-zinc-900 transition-all duration-300 active:scale-95"
                 >
                   <Grid3X3 className="w-6 h-6" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent 
                 align="end" 
-                className="w-72 mt-4 bg-white/70 dark:bg-black/40 backdrop-blur-3xl border-white/20 dark:border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.2)] rounded-[32px] p-3 font-['Roboto']"
+                className="w-72 mt-4 bg-white border border-zinc-200 shadow-[0_10px_40px_rgba(0,0,0,0.1)] rounded-[32px] p-3 font-['Roboto'] z-[200]"
               >
-                <DropdownMenuLabel className="px-5 py-3 text-xs font-black uppercase tracking-[0.25em] text-white/30">Danh mục chính</DropdownMenuLabel>
+                <DropdownMenuLabel className="px-5 py-3 text-xs font-black uppercase tracking-[0.25em] text-zinc-400">Danh mục chính</DropdownMenuLabel>
                 <div className="space-y-1">
                   {menuItems.map(item => (
                     <DropdownMenuItem 
@@ -376,13 +376,13 @@ export function NewLayout({
                       className={cn(
                         "rounded-2xl px-5 py-4 cursor-pointer transition-all duration-200 group flex items-center gap-4",
                         activeKey === item.key 
-                          ? "bg-white/15 text-white shadow-inner" 
-                          : "hover:bg-white/10 text-white/70 hover:text-white"
+                          ? "bg-zinc-100 text-zinc-900 shadow-sm" 
+                          : "hover:bg-zinc-50 text-zinc-600 hover:text-zinc-900"
                       )}
                     >
                       <div className={cn(
                         "p-2 rounded-xl transition-colors",
-                        activeKey === item.key ? "bg-primary/20" : "bg-white/5 group-hover:bg-white/10"
+                        activeKey === item.key ? "bg-white shadow-sm border border-zinc-200" : "bg-zinc-100 group-hover:bg-zinc-200"
                       )}>
                         <item.icon className="w-5 h-5" />
                       </div>
@@ -390,12 +390,12 @@ export function NewLayout({
                     </DropdownMenuItem>
                   ))}
                 </div>
-                <div className="h-px bg-white/5 my-3" />
+                <div className="h-px bg-zinc-100 my-3" />
                 <DropdownMenuItem 
                   onClick={() => setShowSettings(true)}
-                  className="rounded-2xl px-5 py-4 cursor-pointer text-white/50 hover:text-white hover:bg-white/5 flex items-center gap-4 transition-colors"
+                  className="rounded-2xl px-5 py-4 cursor-pointer text-zinc-600 hover:text-zinc-900 hover:bg-zinc-50 flex items-center gap-4 transition-colors"
                 >
-                  <div className="p-2 rounded-xl bg-white/5 group-hover:bg-white/10">
+                  <div className="p-2 rounded-xl bg-zinc-100 group-hover:bg-zinc-200">
                     <Settings className="w-5 h-5" />
                   </div>
                   <span className="text-[17px]">Cài đặt</span>
@@ -407,7 +407,7 @@ export function NewLayout({
       </div>
 
       {/* ═══════════════ MAIN CONTENT ═══════════════ */}
-      <main className="flex flex-col flex-1 w-full overflow-hidden relative z-10 bg-white">
+      <main className="flex flex-col flex-1 w-full overflow-y-auto relative z-10 bg-white">
         <div className="w-full h-full">
           {children}
         </div>
