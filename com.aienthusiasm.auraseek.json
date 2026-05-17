@@ -97,7 +97,7 @@
         "build-args": ["--share=network"]
       },
       "build-commands": [
-        "yarn install --frozen-lockfile",
+        "yarn install --frozen-lockfile --ignore-engines",
         "yarn build",
         "cd src-tauri && cargo build --release",
         "install -D src-tauri/target/release/auraseek /app/bin/auraseek",
