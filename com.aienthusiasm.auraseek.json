@@ -30,13 +30,13 @@
       "name": "node",
       "buildsystem": "simple",
       "build-commands": [
-        "tar -C /app --strip-components=1 --no-same-owner -xf node-v22.2.0-linux-x64.tar.xz"
+        "tar -C /app --strip-components=1 --no-same-owner -xf node-v22.12.0-linux-x64.tar.xz"
       ],
       "sources": [
         {
           "type": "file",
-          "url": "https://nodejs.org/dist/v22.2.0/node-v22.2.0-linux-x64.tar.xz",
-          "sha256": "3544eee9cb1414d6e9003efd56bc807ffb0f4445d2fc383e1df04c3e5e72c91b"
+          "url": "https://nodejs.org/dist/v22.12.0/node-v22.12.0-linux-x64.tar.xz",
+          "sha256": "22982235e1b71fa8850f82edd09cdae7e3f32df1764a9ec298c72d25ef2c164f"
         }
       ]
     },
