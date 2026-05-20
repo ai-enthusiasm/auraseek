@@ -100,6 +100,8 @@ pub fn run() {
             interface::commands::timeline::cmd_hide_photo,
             interface::commands::timeline::cmd_unhide_photo,
             interface::commands::timeline::cmd_get_hidden_photos,
+            interface::commands::timeline::cmd_get_timeline_page,
+            interface::commands::timeline::cmd_generate_missing_thumbnails,
             interface::commands::albums::cmd_create_album,
             interface::commands::albums::cmd_get_albums,
             interface::commands::albums::cmd_add_to_album,

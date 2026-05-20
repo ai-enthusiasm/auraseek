@@ -80,6 +80,23 @@ export function HiddenView() {
     })).filter(s => s.photos.length > 0);
   }, [timelineGroups, photos]);
 
+  const currentPhotoIndex = useMemo(() => {
+    if (!selectedPhoto) return -1;
+    return photos.findIndex(p => p.id === selectedPhoto.id);
+  }, [selectedPhoto, photos]);
+
+  const handleNextPhoto = useCallback(() => {
+    if (currentPhotoIndex >= 0 && currentPhotoIndex < photos.length - 1) {
+      setSelectedPhoto(photos[currentPhotoIndex + 1]);
+    }
+  }, [currentPhotoIndex, photos]);
+
+  const handlePrevPhoto = useCallback(() => {
+    if (currentPhotoIndex > 0) {
+      setSelectedPhoto(photos[currentPhotoIndex - 1]);
+    }
+  }, [currentPhotoIndex, photos]);
+
   if (!isAuthenticated) {
     return (
       <div className="flex flex-col items-center justify-center h-full gap-6 bg-slate-950/20">
@@ -174,6 +191,8 @@ export function HiddenView() {
                 setSelectedPhoto(null);
                 loadHiddenPhotos();
             }} 
+            onNext={currentPhotoIndex < photos.length - 1 ? handleNextPhoto : undefined}
+            onPrev={currentPhotoIndex > 0 ? handlePrevPhoto : undefined}
             isHiddenMode={true}
         />
       )}

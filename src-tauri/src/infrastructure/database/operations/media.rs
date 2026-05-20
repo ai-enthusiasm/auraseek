@@ -19,10 +19,7 @@ impl DbOperations {
             "SELECT id, processed FROM media
              WHERE file_name = ?1
                AND file_size = ?2
-               AND (
-                    (meta_modified_at IS NULL AND ?3 IS NULL)
-                    OR meta_modified_at = ?3
-               )
+               AND meta_modified_at IS ?3
              LIMIT 1"
         )?;
         use rusqlite::OptionalExtension;
@@ -237,6 +234,54 @@ impl DbOperations {
         )?;
         Self::group_rows_into_timeline(rows, source_dir)
     }
+
+    /// Lightweight paginated timeline query — skips JOINing objects/faces tables.
+    /// Returns only the fields needed for grid display + total count.
+    pub fn get_timeline_page(
+        db: &SqliteDb,
+        offset: usize,
+        limit: usize,
+        source_dir: &str,
+    ) -> Result<(Vec<crate::core::models::TimelinePageItem>, usize)> {
+        let conn = db.conn();
+        let base = source_dir.trim_end_matches('/');
+
+        let total: usize = conn.query_row(
+            "SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND is_hidden = 0 AND processed = 1",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, media_type, file_name, meta_width, meta_height,
+                    meta_created_at, favorite, thumbnail
+             FROM media
+             WHERE deleted_at IS NULL AND is_hidden = 0 AND processed = 1
+             ORDER BY meta_created_at DESC
+             LIMIT ?1 OFFSET ?2"
+        )?;
+
+        let items: Vec<crate::core::models::TimelinePageItem> = stmt
+            .query_map(params![limit as i64, offset as i64], |r| {
+                let file_name: String = r.get(2)?;
+                let thumb: Option<String> = r.get(7)?;
+                Ok(crate::core::models::TimelinePageItem {
+                    media_id:       r.get(0)?,
+                    file_path:      format!("{}/{}", base, file_name),
+                    media_type:     r.get(1)?,
+                    width:          r.get(3)?,
+                    height:         r.get(4)?,
+                    created_at:     r.get(5)?,
+                    favorite:       r.get::<_, i32>(6)? != 0,
+                    thumbnail_path: thumb,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok((items, total))
+    }
+
 
     pub fn get_distinct_objects(db: &SqliteDb) -> Result<Vec<String>> {
         let conn = db.conn();

@@ -113,7 +113,7 @@ export function PhotoCard({
           /* ── Image ──────────────────────────────────────────── */
           <img
             ref={imgRef}
-            src={photo.url}
+            src={photo.thumbnailUrl || photo.url}
             alt="Photo"
             className={cn(
               "h-full w-full select-none object-cover transition-transform duration-700 ease-out",

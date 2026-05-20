@@ -108,13 +108,13 @@ impl Default for AppConfig {
             data_dir,
             log_path,
 
-            face_detection_threshold: 0.912,
-            face_identity_threshold: 0.351,
+            face_detection_threshold: 0.92,
+            face_identity_threshold: 0.51,
             face_nms_iou_threshold: 0.8,
             face_top_k: 5000,
             yolo_confidence: 0.5,
             yolo_iou: 0.9,
-            search_threshold: 0.386,
+            search_threshold: 0.51,
             search_limit: 10000,
             max_batch_size: 1,
 

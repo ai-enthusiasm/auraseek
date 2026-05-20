@@ -161,6 +161,15 @@ function App() {
             void loadTimeline({ blocking: true }).then(() => {
               if (initGenerationRef.current !== initGenAtStart) return;
               triggerAutoScan();
+              // Generate thumbnails for images that were ingested before thumbnail support
+              AuraSeekApi.generateMissingThumbnails()
+                .then((count) => {
+                  if (count > 0) {
+                    console.log(`[AuraSeek] 🖼️ Generated ${count} missing thumbnails`);
+                    loadTimeline(); // Refresh to show new thumbnails
+                  }
+                })
+                .catch(() => { /* non-critical */ });
             });
           }
         }

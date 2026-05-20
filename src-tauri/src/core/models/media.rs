@@ -76,6 +76,28 @@ pub struct TimelineItem {
     pub thumbnail_path:    Option<String>,
 }
 
+/// Lightweight item for paginated grid view — no objects/faces detail.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelinePageItem {
+    pub media_id:       String,
+    pub file_path:      String,
+    pub media_type:     String,
+    pub width:          Option<u32>,
+    pub height:         Option<u32>,
+    pub created_at:     Option<String>,
+    pub favorite:       bool,
+    pub thumbnail_path: Option<String>,
+}
+
+/// Paginated timeline response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TimelinePageResponse {
+    pub items:  Vec<TimelinePageItem>,
+    pub total:  usize,
+    pub offset: usize,
+    pub limit:  usize,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DuplicateGroup {
     pub group_id: String,

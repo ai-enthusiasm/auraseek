@@ -109,6 +109,23 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
         });
     }, [filterType, filterPayload, photos, albumPhotos, isRealAlbum]);
 
+    const currentPhotoIndex = useMemo(() => {
+        if (!selectedPhoto) return -1;
+        return filteredPhotos.findIndex(p => p.id === selectedPhoto.id);
+    }, [selectedPhoto, filteredPhotos]);
+
+    const handleNextPhoto = () => {
+        if (currentPhotoIndex >= 0 && currentPhotoIndex < filteredPhotos.length - 1) {
+            setSelectedPhoto(filteredPhotos[currentPhotoIndex + 1]);
+        }
+    };
+
+    const handlePrevPhoto = () => {
+        if (currentPhotoIndex > 0) {
+            setSelectedPhoto(filteredPhotos[currentPhotoIndex - 1]);
+        }
+    };
+
     return (
         <div className="flex flex-col h-full w-full">
 
@@ -150,6 +167,8 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
                 <FullScreenViewer
                     photo={selectedPhoto}
                     onClose={() => setSelectedPhoto(null)}
+                    onNext={currentPhotoIndex < filteredPhotos.length - 1 ? handleNextPhoto : undefined}
+                    onPrev={currentPhotoIndex > 0 ? handlePrevPhoto : undefined}
                 />
             )}
         </div>

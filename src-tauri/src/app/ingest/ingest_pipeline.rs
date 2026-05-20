@@ -88,20 +88,29 @@ pub async fn ingest_folder(
             .unwrap_or("")
             .to_string();
 
-        let media_id = match scan_single_file(&path, &sqlite, &source_dir, media_type).await {
-            Ok(Some(media_id)) => {
-                summary.newly_added += 1;
-                media_id
+        let media_id = {
+            let guard = sqlite.lock().unwrap();
+            let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not connected"))?;
+            match scan_single_file(&path, db, &source_dir, media_type) {
+                Ok(Some(media_id)) => {
+                    summary.newly_added += 1;
+                    Some(media_id)
+                }
+                Ok(None) => {
+                    summary.skipped_dup += 1;
+                    None
+                }
+                Err(e) => {
+                    crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
+                    summary.errors += 1;
+                    continue;
+                }
             }
-            Ok(None) => {
-                summary.skipped_dup += 1;
-                continue;
-            }
-            Err(e) => {
-                crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
-                summary.errors += 1;
-                continue;
-            }
+        };
+
+        let media_id = match media_id {
+            Some(id) => id,
+            None => continue,
         };
 
         crate::log_info!("🤖 [AI {}/{}] Processing: {}", ai_processed + 1, total_to_process, file_name_only);
@@ -114,7 +123,8 @@ pub async fn ingest_folder(
                 Err(e)          => crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name_only, e),
             }
         } else {
-            process_image_file(&path_str, &media_id, &file_name_only, &sqlite, &qdrant, &engine).await;
+            let cache_ref = thumb_cache_dir.as_deref();
+            process_image_file(&path_str, &media_id, &file_name_only, &sqlite, &qdrant, &engine, cache_ref).await;
         }
 
         ai_processed += 1;
@@ -185,7 +195,13 @@ pub async fn ingest_files(
             }
         }
 
-        match scan_single_file(&dest, &sqlite, &dest_dir, media_type).await {
+        let scan_result = {
+            let guard = sqlite.lock().unwrap();
+            let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not connected"))?;
+            scan_single_file(&dest, db, &dest_dir, media_type)
+        };
+
+        match scan_result {
             Ok(Some(media_id)) => {
                 crate::log_info!("📎 Copied+ingested: {} ({}) as {}", file_name, media_id, media_type);
                 summary.newly_added += 1;
@@ -198,7 +214,8 @@ pub async fn ingest_files(
                         crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name, e);
                     }
                 } else {
-                    process_image_file(&dest_str, &media_id, &file_name, &sqlite, &qdrant, &engine).await;
+                    let cache_ref = thumb_cache_dir.as_deref();
+                    process_image_file(&dest_str, &media_id, &file_name, &sqlite, &qdrant, &engine, cache_ref).await;
                 }
             }
             Ok(None) => { summary.skipped_dup += 1; }

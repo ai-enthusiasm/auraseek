@@ -28,6 +28,36 @@ pub async fn analyze_image_raw(
     }
 }
 
+/// Generate a small thumbnail (max 800×800px, JPEG quality ~85%) for fast grid display.
+/// Returns the absolute path of the created thumbnail file.
+pub fn generate_thumbnail(
+    source_path: &Path,
+    cache_dir: &Path,
+    media_id: &str,
+) -> Result<String> {
+    use image::imageops::FilterType;
+
+    std::fs::create_dir_all(cache_dir)?;
+
+    let img = image::open(source_path)?;
+    // Use 800x800 for sharpness on Retina/High-DPI screens, and Lanczos3 filter for high-quality downsampling
+    let thumb = img.resize(800, 800, FilterType::Lanczos3);
+
+    let thumb_path = cache_dir.join(format!("{}.thumb.jpg", media_id));
+
+    // Save as JPEG with 85% quality to avoid artifacting
+    let out_file = std::fs::File::create(&thumb_path)?;
+    let mut encoder = image::codecs::jpeg::JpegEncoder::new_with_quality(out_file, 85);
+    encoder.encode(
+        thumb.to_rgb8().as_raw(),
+        thumb.width(),
+        thumb.height(),
+        image::ColorType::Rgb8,
+    )?;
+
+    Ok(thumb_path.to_string_lossy().to_string())
+}
+
 pub async fn process_image_file(
     path_str: &str,
     media_id: &str,
@@ -35,6 +65,7 @@ pub async fn process_image_file(
     sqlite: &Arc<std::sync::Mutex<Option<SqliteDb>>>,
     qdrant: &Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
+    thumb_cache_dir: Option<&Path>,
 ) {
     let t0 = std::time::Instant::now();
     let output = match analyze_image_raw(path_str, engine).await {
@@ -52,10 +83,25 @@ pub async fn process_image_file(
     let faces = convert_faces(&output);
     let detected_faces = extract_person_data(&faces);
 
+    // ── Generate thumbnail for grid view ──────────────────────────────────
+    let thumb_path: Option<String> = thumb_cache_dir.and_then(|cache_dir| {
+        let source = Path::new(path_str);
+        match generate_thumbnail(source, cache_dir, media_id) {
+            Ok(p) => {
+                crate::log_info!("  🖼️ Thumbnail saved: {}", p);
+                Some(p)
+            }
+            Err(e) => {
+                crate::log_warn!("  ⚠️ Thumbnail generation failed for {}: {}", path_str, e);
+                None
+            }
+        }
+    });
+
     {
         let guard = sqlite.lock().unwrap();
         if let Some(ref db) = *guard {
-            if let Err(e) = DbOperations::update_media_ai(db, media_id, objects, faces, None) {
+            if let Err(e) = DbOperations::update_media_ai(db, media_id, objects, faces, thumb_path) {
                 crate::log_warn!("⚠️ update_media_ai failed for {}: {}", media_id, e);
             }
             for (fid, conf, bbox) in &detected_faces {
@@ -143,9 +189,9 @@ pub fn extract_person_data(faces: &[FaceEntry]) -> Vec<(String, f32, Bbox)> {
     )).collect()
 }
 
-pub async fn scan_single_file(
+pub fn scan_single_file(
     path: &Path,
-    sqlite: &Arc<std::sync::Mutex<Option<SqliteDb>>>,
+    db: &SqliteDb,
     _source_dir: &str,
     media_type: &str,
 ) -> Result<Option<String>> {
@@ -158,36 +204,26 @@ pub async fn scan_single_file(
 
     let modified_at = file_modified_at(&meta);
 
-    {
-        let guard = sqlite.lock().unwrap();
-        if let Some(ref db) = *guard {
-            if let Ok(Some((media_id, processed))) = DbOperations::check_file_by_metadata(
-                db,
-                &name,
-                size,
-                modified_at.as_deref(),
-            ) {
-                if processed {
-                    return Ok(None);
-                } else {
-                    return Ok(Some(media_id));
-                }
-            }
+    if let Ok(Some((media_id, processed))) = DbOperations::check_file_by_metadata(
+        db,
+        &name,
+        size,
+        modified_at.as_deref(),
+    ) {
+        if processed {
+            return Ok(None);
+        } else {
+            return Ok(Some(media_id));
         }
     }
 
     let sha256 = compute_sha256(path)?;
 
-    {
-        let guard = sqlite.lock().unwrap();
-        if let Some(ref db) = *guard {
-            if let Ok(Some((media_id, processed))) = DbOperations::check_exact_file(db, &name, &sha256) {
-                if processed {
-                    return Ok(None);
-                } else {
-                    return Ok(Some(media_id));
-                }
-            }
+    if let Ok(Some((media_id, processed))) = DbOperations::check_exact_file(db, &name, &sha256) {
+        if processed {
+            return Ok(None);
+        } else {
+            return Ok(Some(media_id));
         }
     }
 
@@ -206,9 +242,6 @@ pub async fn scan_single_file(
         created_at: modified_at.clone(),
         modified_at,
     };
-
-    let guard = sqlite.lock().unwrap();
-    let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not connected"))?;
 
     if let Some(media_id) = DbOperations::find_media_by_name(db, &file_info.name)? {
         DbOperations::reset_media_file(db, &media_id, media_type, &file_info, &metadata)?;
@@ -251,9 +284,16 @@ fn collect_files_recursive(dir: &Path, images: &mut Vec<PathBuf>, videos: &mut V
 }
 
 fn compute_sha256(path: &Path) -> Result<String> {
-    let data = std::fs::read(path)?;
-    let hash = Sha256::digest(&data);
-    Ok(hex::encode(hash))
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 1024 * 256]; // 256KB buffer
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 { break; }
+        hasher.update(&buffer[..count]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn file_modified_at(meta: &std::fs::Metadata) -> Option<String> {
