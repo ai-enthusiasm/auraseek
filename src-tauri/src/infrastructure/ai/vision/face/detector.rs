@@ -1,10 +1,8 @@
-/// face detection and recognition using opencv (yunet and sface)
 use anyhow::{anyhow, Result};
 use ort::session::Session;
 use ort::value::Value;
 use opencv::{
-    core::{Mat, Ptr, Size, Vec3b},
-    objdetect::FaceRecognizerSF,
+    core::{Mat, Size, Vec3b, Point2f, Vector},
     imgcodecs::{imread, IMREAD_COLOR},
     prelude::*,
 };
@@ -12,14 +10,6 @@ use super::db::FaceDb;
 use crate::core::config::AppConfig;
 use crate::infrastructure::ai::runtime::build_session;
 use crate::log_info;
-
-// This YuNet checkpoint expects fixed NCHW input [1,3,120,160].
-const YUNET_INPUT_H: usize = 120;
-const YUNET_INPUT_W: usize = 160;
-const YUNET_VARIANCE_0: f32 = 0.1;
-const YUNET_VARIANCE_1: f32 = 0.2;
-/// Cosine similarity for face identity is configured via `AppConfig::face_identity_threshold`
-/// (`AURASEEK_FACE_IDENTITY_THRESHOLD` or legacy `AURASEEK_FACE_THRESHOLD`).
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FaceGroup {
@@ -31,90 +21,42 @@ pub struct FaceGroup {
     pub embedding: Vec<f32>,
 }
 
-struct YuNetFace {
-    pub row:   Mat,
-    pub bbox:  [f32; 4],
+struct FaceDetection {
+    pub bbox:  [f32; 4], // [x, y, w, h]
     pub score: f32,
-}
-
-#[derive(Clone, Copy)]
-struct Prior {
-    cx: f32,
-    cy: f32,
-    sx: f32,
-    sy: f32,
+    pub landmarks: [[f32; 2]; 5],
 }
 
 pub struct FaceModel {
-    yunet_path: String,
-    recognizer_path: String,
+    scrfd_path: String,
+    arcface_path: String,
     num_threads: usize,
-    backend: i32,
-    target: i32,
-    yunet_session: Session,
-    detector_size: Size,
-    recognizer:    Ptr<FaceRecognizerSF>,
+    scrfd_session: Session,
+    arcface_session: Session,
     score_threshold: f32,
     nms_iou_threshold: f32,
     top_k: usize,
 }
 
 impl FaceModel {
-    fn yunet_priors() -> Vec<Prior> {
-        // Match YuNet anchor generation used by OpenCV FaceDetectorYN for 160x120 input.
-        let steps = [8usize, 16, 32, 64];
-        let min_sizes: [&[usize]; 4] = [
-            &[10, 16, 24],
-            &[32, 48],
-            &[64, 96],
-            &[128, 192, 256],
-        ];
-        let mut priors = Vec::new();
-        for (idx, step) in steps.iter().enumerate() {
-            let fm_w = YUNET_INPUT_W / step;
-            let fm_h = YUNET_INPUT_H / step;
-            for y in 0..fm_h {
-                for x in 0..fm_w {
-                    for ms in min_sizes[idx] {
-                        let cx = (x as f32 + 0.5) * *step as f32 / YUNET_INPUT_W as f32;
-                        let cy = (y as f32 + 0.5) * *step as f32 / YUNET_INPUT_H as f32;
-                        let sx = *ms as f32 / YUNET_INPUT_W as f32;
-                        let sy = *ms as f32 / YUNET_INPUT_H as f32;
-                        priors.push(Prior { cx, cy, sx, sy });
-                    }
-                }
-            }
-        }
-        priors
-    }
-
-    pub fn new(yunet_path: &str, sface_path: &str, num_threads: usize) -> Result<Self> {
-        let size = Size::new(320, 320);
+    pub fn new(scrfd_path: &str, arcface_path: &str, num_threads: usize) -> Result<Self> {
         let cfg = AppConfig::global();
-        // opencv-rust 0.98+ no longer exposes `get_cuda_enabled_device_count` on all targets.
-        // Use OpenCV CPU DNN backend everywhere (stable on Windows/Linux CI and macOS).
-        let (backend, target, provider_name) = (
-            opencv::dnn::DNN_BACKEND_OPENCV,
-            opencv::dnn::DNN_TARGET_CPU,
-            "CPU",
+        log_info!(
+            "face model: scrfd={:<45} | arcface={:<45} | threads={}",
+            scrfd_path,
+            arcface_path,
+            num_threads
         );
 
-        log_info!("model: {:<45} | provider: {} | threads: {}", yunet_path, provider_name, num_threads);
-
-        let yunet_session = build_session(yunet_path, num_threads)?;
-        let recognizer = FaceRecognizerSF::create(
-            sface_path, "", backend, target
-        )?;
+        let scrfd_session = build_session(scrfd_path, num_threads)?;
+        let arcface_session = build_session(arcface_path, num_threads)?;
 
         Ok(Self {
-            yunet_path: yunet_path.to_string(),
-            recognizer_path: sface_path.to_string(),
+            scrfd_path: scrfd_path.to_string(),
+            arcface_path: arcface_path.to_string(),
             num_threads,
-            backend,
-            target,
-            yunet_session,
-            detector_size: size,
-            recognizer,
+            scrfd_session,
+            arcface_session,
             score_threshold: cfg.face_detection_threshold,
             nms_iou_threshold: cfg.face_nms_iou_threshold,
             top_k: cfg.face_top_k,
@@ -126,23 +68,18 @@ impl FaceModel {
     }
 
     fn rebuild_models(&mut self) -> Result<()> {
-        self.yunet_session = build_session(&self.yunet_path, self.num_threads)?;
-        self.recognizer = FaceRecognizerSF::create(
-            &self.recognizer_path,
-            "",
-            self.backend,
-            self.target,
-        )?;
+        self.scrfd_session = build_session(&self.scrfd_path, self.num_threads)?;
+        self.arcface_session = build_session(&self.arcface_path, self.num_threads)?;
         Ok(())
     }
 
-    fn run_yunet_with_retry(&mut self, blob: Vec<f32>, pad_h: usize, pad_w: usize) -> Result<Vec<Vec<f32>>> {
+    fn run_scrfd_with_retry(&mut self, blob: Vec<f32>) -> Result<Vec<Vec<f32>>> {
         let run_once = |session: &mut Session, input: Vec<f32>| -> Result<Vec<Vec<f32>>> {
             let input_tensor = Value::from_array((
-                vec![1usize, 3, pad_h, pad_w],
+                vec![1usize, 3, 640, 640],
                 input.into_boxed_slice(),
             ))?;
-            let outputs = session.run(ort::inputs!["input" => input_tensor])?;
+            let outputs = session.run(ort::inputs!["input.1" => input_tensor])?;
             let mut out = Vec::with_capacity(outputs.len());
             for i in 0..outputs.len() {
                 let (_, data) = outputs[i].try_extract_tensor::<f32>()?;
@@ -151,264 +88,279 @@ impl FaceModel {
             Ok(out)
         };
 
-        match run_once(&mut self.yunet_session, blob.clone()) {
+        match run_once(&mut self.scrfd_session, blob.clone()) {
             Ok(v) => Ok(v),
             Err(first_err) => {
-                log_info!("face detector recover: rebuilding detector after error: {}", first_err);
+                log_info!("scrfd detector recover: rebuilding session after error: {}", first_err);
                 self.rebuild_models()?;
-                run_once(&mut self.yunet_session, blob)
+                run_once(&mut self.scrfd_session, blob)
             }
         }
     }
 
-    fn detect_faces_raw(&mut self, frame: &Mat) -> Result<Vec<YuNetFace>> {
+    fn run_arcface_with_retry(&mut self, blob: Vec<f32>) -> Result<Vec<f32>> {
+        let run_once = |session: &mut Session, input: Vec<f32>| -> Result<Vec<f32>> {
+            let input_tensor = Value::from_array((
+                vec![1usize, 3, 112, 112],
+                input.into_boxed_slice(),
+            ))?;
+            let outputs = session.run(ort::inputs!["input.1" => input_tensor])?;
+            let (_, data) = outputs[0].try_extract_tensor::<f32>()?;
+            Ok(data.to_vec())
+        };
+
+        match run_once(&mut self.arcface_session, blob.clone()) {
+            Ok(v) => Ok(v),
+            Err(first_err) => {
+                log_info!("arcface embedder recover: rebuilding session after error: {}", first_err);
+                self.rebuild_models()?;
+                run_once(&mut self.arcface_session, blob)
+            }
+        }
+    }
+
+    fn detect_faces_raw(&mut self, frame: &Mat) -> Result<Vec<FaceDetection>> {
         if frame.empty() { return Ok(vec![]); }
         let size = frame.size()?;
-        let (w, h) = (size.width as usize, size.height as usize);
-        if w < 20 || h < 20 { return Ok(vec![]); }
+        let (w_img, h_img) = (size.width as f32, size.height as f32);
+        if w_img < 20.0 || h_img < 20.0 { return Ok(vec![]); }
 
-        let ratio_x = w as f32 / YUNET_INPUT_W as f32;
-        let ratio_y = h as f32 / YUNET_INPUT_H as f32;
-        self.detector_size = Size::new(w as i32, h as i32);
+        let scale_x = w_img / 640.0;
+        let scale_y = h_img / 640.0;
 
         let mut resized = Mat::default();
         opencv::imgproc::resize(
             frame,
             &mut resized,
-            Size::new(YUNET_INPUT_W as i32, YUNET_INPUT_H as i32),
+            Size::new(640, 640),
             0.0,
             0.0,
             opencv::imgproc::INTER_LINEAR,
         )?;
 
-        let area = YUNET_INPUT_W * YUNET_INPUT_H;
+        let area = 640 * 640;
         let mut blob = vec![0f32; 3 * area];
-        for y in 0..YUNET_INPUT_H {
-            for x in 0..YUNET_INPUT_W {
+        for y in 0..640 {
+            for x in 0..640 {
                 let px: Vec3b = *resized.at_2d::<Vec3b>(y as i32, x as i32)?;
-                let idx = y * YUNET_INPUT_W + x;
-                // blobFromImage with default settings keeps BGR channel order.
-                blob[idx] = px[0] as f32;
-                blob[idx + area] = px[1] as f32;
-                blob[idx + 2 * area] = px[2] as f32;
+                let idx = y * 640 + x;
+                // BGR -> RGB and normalization
+                blob[idx] = (px[2] as f32 - 127.5) / 128.0;          // R
+                blob[idx + area] = (px[1] as f32 - 127.5) / 128.0;   // G
+                blob[idx + 2 * area] = (px[0] as f32 - 127.5) / 128.0; // B
             }
         }
 
-        let outputs = self.run_yunet_with_retry(blob, YUNET_INPUT_H, YUNET_INPUT_W)?;
-        let mut raw_faces = Vec::new();
-        if outputs.len() >= 12 {
-            let strides = [8usize, 16, 32];
-            for (i, stride) in strides.iter().enumerate() {
-                let cols = YUNET_INPUT_W / stride;
-                let rows = YUNET_INPUT_H / stride;
-                let cls = &outputs[i];
-                let obj = &outputs[i + 3];
-                let bbox = &outputs[i + 6];
-                let kps = &outputs[i + 9];
+        let outputs = self.run_scrfd_with_retry(blob)?;
+        if outputs.len() != 9 {
+            return Err(anyhow!("SCRFD model outputs size mismatch: expected 9, got {}", outputs.len()));
+        }
 
-                for r in 0..rows {
-                    for c in 0..cols {
-                        let idx = r * cols + c;
-                        let cls_score = cls[idx].clamp(0.0, 1.0);
-                        let obj_score = obj[idx].clamp(0.0, 1.0);
-                        let score = (cls_score * obj_score).sqrt();
-                        if score < self.score_threshold {
-                            continue;
-                        }
+        let strides = [8usize, 16, 32];
+        let fmc = 3;
+        let num_anchors = 2;
+        let mut candidate_faces = Vec::new();
 
-                        let cx = (c as f32 + bbox[idx * 4]) * *stride as f32;
-                        let cy = (r as f32 + bbox[idx * 4 + 1]) * *stride as f32;
-                        let bw = bbox[idx * 4 + 2].exp() * *stride as f32;
-                        let bh = bbox[idx * 4 + 3].exp() * *stride as f32;
-                        let x1 = cx - bw / 2.0;
-                        let y1 = cy - bh / 2.0;
-                        let x1o = x1 * ratio_x;
-                        let y1o = y1 * ratio_y;
-                        let bwo = bw * ratio_x;
-                        let bho = bh * ratio_y;
+        for (idx, &stride) in strides.iter().enumerate() {
+            let fh = 640 / stride;
+            let fw = 640 / stride;
+            let expected_len = fh * fw * num_anchors;
 
-                        let mut row = Mat::zeros(1, 15, opencv::core::CV_32FC1)?.to_mat()?;
-                        *row.at_2d_mut::<f32>(0, 0)? = x1o;
-                        *row.at_2d_mut::<f32>(0, 1)? = y1o;
-                        *row.at_2d_mut::<f32>(0, 2)? = bwo;
-                        *row.at_2d_mut::<f32>(0, 3)? = bho;
-                        for n in 0..5usize {
-                            *row.at_2d_mut::<f32>(0, (4 + 2 * n) as i32)? =
-                                ((kps[idx * 10 + 2 * n] + c as f32) * *stride as f32) * ratio_x;
-                            *row.at_2d_mut::<f32>(0, (4 + 2 * n + 1) as i32)? =
-                                ((kps[idx * 10 + 2 * n + 1] + r as f32) * *stride as f32) * ratio_y;
-                        }
-                        *row.at_2d_mut::<f32>(0, 14)? = score;
+            let scores_out = &outputs[idx];
+            let bbox_preds_out = &outputs[idx + fmc];
+            let kps_preds_out = &outputs[idx + 2 * fmc];
 
-                        raw_faces.push(YuNetFace {
-                            row,
-                            bbox: [x1o, y1o, bwo, bho],
-                            score,
-                        });
-                    }
-                }
-            }
-        } else {
-            // Some YuNet exports return a compact [N, 15]-like tensor (often with 3 outputs total).
-            // Decode from the first output and keep behavior equivalent to OpenCV FaceDetectorYN rows.
-            let det = &outputs[0];
-            log_info!(
-                "yunet compact output layout: outputs={}, first_len={}, second_len={}, third_len={}",
-                outputs.len(),
-                det.len(),
-                outputs.get(1).map(|v| v.len()).unwrap_or(0),
-                outputs.get(2).map(|v| v.len()).unwrap_or(0)
-            );
-            if outputs.len() == 3
-                && det.len() % 14 == 0
-                && outputs[2].len() == det.len() / 14
-                && (outputs[1].len() == det.len() / 14 || outputs[1].len() == 2 * (det.len() / 14))
-            {
-                // Layout variant A: loc [N,14], cls [N], iou [N]
-                // Layout variant B: loc [N,14], cls [N,2], iou [N]
-                let n = det.len() / 14;
-                let cls = &outputs[1];
-                let obj = &outputs[2];
-                let priors = Self::yunet_priors();
-                if priors.len() != n {
-                    return Err(anyhow!(
-                        "yunet prior mismatch: priors={} outputs_n={}",
-                        priors.len(),
-                        n
-                    ));
-                }
-                log_info!(
-                    "yunet compact decode: n={}, cls_len={}, obj_len={}, priors={}",
-                    n,
-                    cls.len(),
-                    obj.len(),
-                    priors.len()
-                );
-                for i in 0..n {
-                    let base = i * 14;
-                    let cls_score = if cls.len() == n {
-                        cls[i].clamp(0.0, 1.0)
-                    } else {
-                        // [bg, face] pair per anchor. Treat values as logits if outside [0,1].
-                        let bg = cls[2 * i];
-                        let face = cls[2 * i + 1];
-                        if (0.0..=1.0).contains(&bg) && (0.0..=1.0).contains(&face) {
-                            face
-                        } else {
-                            let m = bg.max(face);
-                            let eb = (bg - m).exp();
-                            let ef = (face - m).exp();
-                            ef / (eb + ef + 1e-6)
-                        }
-                    };
-                    let obj_score = obj[i].clamp(0.0, 1.0);
-                    let score = (cls_score * obj_score).sqrt();
-                    if score < self.score_threshold {
-                        continue;
-                    }
-
-                    let p = priors[i];
-                    let cx = p.cx + det[base] * YUNET_VARIANCE_0 * p.sx;
-                    let cy = p.cy + det[base + 1] * YUNET_VARIANCE_0 * p.sy;
-                    let bw = p.sx * (det[base + 2] * YUNET_VARIANCE_1).exp();
-                    let bh = p.sy * (det[base + 3] * YUNET_VARIANCE_1).exp();
-                    let x1 = (cx - bw / 2.0) * YUNET_INPUT_W as f32;
-                    let y1 = (cy - bh / 2.0) * YUNET_INPUT_H as f32;
-                    let bw_px = bw * YUNET_INPUT_W as f32;
-                    let bh_px = bh * YUNET_INPUT_H as f32;
-                    let x1o = x1 * ratio_x;
-                    let y1o = y1 * ratio_y;
-                    let bwo = bw_px * ratio_x;
-                    let bho = bh_px * ratio_y;
-
-                    let mut row = Mat::zeros(1, 15, opencv::core::CV_32FC1)?.to_mat()?;
-                    *row.at_2d_mut::<f32>(0, 0)? = x1o;
-                    *row.at_2d_mut::<f32>(0, 1)? = y1o;
-                    *row.at_2d_mut::<f32>(0, 2)? = bwo;
-                    *row.at_2d_mut::<f32>(0, 3)? = bho;
-                    for p in 0..5usize {
-                        let lmx = (priors[i].cx + det[base + 4 + 2 * p] * YUNET_VARIANCE_0 * priors[i].sx)
-                            * YUNET_INPUT_W as f32
-                            * ratio_x;
-                        let lmy = (priors[i].cy + det[base + 4 + 2 * p + 1] * YUNET_VARIANCE_0 * priors[i].sy)
-                            * YUNET_INPUT_H as f32
-                            * ratio_y;
-                        *row.at_2d_mut::<f32>(0, (4 + 2 * p) as i32)? = lmx;
-                        *row.at_2d_mut::<f32>(0, (4 + 2 * p + 1) as i32)? = lmy;
-                    }
-                    *row.at_2d_mut::<f32>(0, 14)? = score;
-                    raw_faces.push(YuNetFace {
-                        row,
-                        bbox: [x1o, y1o, bwo, bho],
-                        score,
-                    });
-                }
-            } else if det.len() % 15 == 0 {
-                for chunk in det.chunks_exact(15) {
-                    let score = chunk[14];
-                    if score < self.score_threshold {
-                        continue;
-                    }
-                    let x1o = chunk[0] * ratio_x;
-                    let y1o = chunk[1] * ratio_y;
-                    let bwo = chunk[2] * ratio_x;
-                    let bho = chunk[3] * ratio_y;
-
-                    let mut row = Mat::zeros(1, 15, opencv::core::CV_32FC1)?.to_mat()?;
-                    *row.at_2d_mut::<f32>(0, 0)? = x1o;
-                    *row.at_2d_mut::<f32>(0, 1)? = y1o;
-                    *row.at_2d_mut::<f32>(0, 2)? = bwo;
-                    *row.at_2d_mut::<f32>(0, 3)? = bho;
-                    for n in 0..5usize {
-                        *row.at_2d_mut::<f32>(0, (4 + 2 * n) as i32)? = chunk[4 + 2 * n] * ratio_x;
-                        *row.at_2d_mut::<f32>(0, (4 + 2 * n + 1) as i32)? = chunk[4 + 2 * n + 1] * ratio_y;
-                    }
-                    *row.at_2d_mut::<f32>(0, 14)? = score;
-                    raw_faces.push(YuNetFace {
-                        row,
-                        bbox: [x1o, y1o, bwo, bho],
-                        score,
-                    });
-                }
-            } else {
+            if scores_out.len() != expected_len {
                 return Err(anyhow!(
-                    "unsupported YuNet output layout: {} outputs, lens=({},{},{})",
-                    outputs.len(),
-                    outputs[0].len(),
-                    outputs.get(1).map(|v| v.len()).unwrap_or(0),
-                    outputs.get(2).map(|v| v.len()).unwrap_or(0)
+                    "SCRFD output score size mismatch for stride {}: expected {}, got {}",
+                    stride,
+                    expected_len,
+                    scores_out.len()
                 ));
             }
+
+            for anchor_idx in 0..expected_len {
+                let score = scores_out[anchor_idx];
+                if score < self.score_threshold {
+                    continue;
+                }
+
+                // Generate anchor center
+                let pos_idx = anchor_idx / num_anchors;
+                let grid_y = pos_idx / fw;
+                let grid_x = pos_idx % fw;
+                let cx = (grid_x as f32) * (stride as f32);
+                let cy = (grid_y as f32) * (stride as f32);
+
+                // Decode bounding box
+                let bbox_base = anchor_idx * 4;
+                let dl = bbox_preds_out[bbox_base] * (stride as f32);
+                let dt = bbox_preds_out[bbox_base + 1] * (stride as f32);
+                let dr = bbox_preds_out[bbox_base + 2] * (stride as f32);
+                let db = bbox_preds_out[bbox_base + 3] * (stride as f32);
+
+                let x1 = cx - dl;
+                let y1 = cy - dt;
+                let x2 = cx + dr;
+                let y2 = cy + db;
+
+                // Scale bounding box back to original coordinates
+                let x1_orig = x1 * scale_x;
+                let y1_orig = y1 * scale_y;
+                let x2_orig = x2 * scale_x;
+                let y2_orig = y2 * scale_y;
+                let w_orig = x2_orig - x1_orig;
+                let h_orig = y2_orig - y1_orig;
+
+                // Decode landmarks
+                let kps_base = anchor_idx * 10;
+                let mut landmarks = [[0.0f32; 2]; 5];
+                for n in 0..5 {
+                    let kps_dx = kps_preds_out[kps_base + 2 * n] * (stride as f32);
+                    let kps_dy = kps_preds_out[kps_base + 2 * n + 1] * (stride as f32);
+                    landmarks[n][0] = (cx + kps_dx) * scale_x;
+                    landmarks[n][1] = (cy + kps_dy) * scale_y;
+                }
+
+                candidate_faces.push(FaceDetection {
+                    bbox: [x1_orig, y1_orig, w_orig, h_orig],
+                    score,
+                    landmarks,
+                });
+            }
         }
 
-        raw_faces.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
-        if raw_faces.len() > self.top_k {
-            raw_faces.truncate(self.top_k);
+        // Apply NMS
+        candidate_faces.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        if candidate_faces.len() > self.top_k {
+            candidate_faces.truncate(self.top_k);
         }
-        let mut kept: Vec<YuNetFace> = Vec::new();
-        for f in raw_faces {
+
+        let mut kept: Vec<FaceDetection> = Vec::new();
+        for face in candidate_faces {
             let mut overlap = false;
             for k in &kept {
-                if calc_iou(&f.bbox, &k.bbox) > self.nms_iou_threshold {
+                if calc_iou(&face.bbox, &k.bbox) > self.nms_iou_threshold {
                     overlap = true;
                     break;
                 }
             }
-            if !overlap { kept.push(f); }
+            if !overlap {
+                kept.push(face);
+            }
         }
-        Ok(kept)
+
+        // Quality/profile filtering
+        let mut final_faces = Vec::new();
+        for face in kept {
+            // Filter 1: Check eye overlap/closeness (< 5px Euclidean distance)
+            let eye_dx = face.landmarks[0][0] - face.landmarks[1][0];
+            let eye_dy = face.landmarks[0][1] - face.landmarks[1][1];
+            let eye_dist = (eye_dx * eye_dx + eye_dy * eye_dy).sqrt();
+            if eye_dist < 5.0 {
+                continue;
+            }
+
+            // Filter 2: Check if landmarks are outside frame bounds
+            let mut out_of_bounds = false;
+            for kp in face.landmarks.iter() {
+                if kp[0] < 0.0 || kp[0] >= w_img || kp[1] < 0.0 || kp[1] >= h_img {
+                    out_of_bounds = true;
+                    break;
+                }
+            }
+            if out_of_bounds {
+                continue;
+            }
+
+            final_faces.push(face);
+        }
+
+        Ok(final_faces)
     }
 
-    /// Detect faces from an already-loaded Mat (e.g. a person crop).
-    ///
-    /// To avoid OpenCV DNN shape errors on some extreme aspect ratios, we
-    /// always resize to the fixed detector input size that was configured
-    /// when the model was created (320x320). Dynamic resizing of the
-    /// detector network has been removed for stability.
-    ///
-    /// Returns FaceGroups with bbox in the coordinate space of the input frame.
-    /// `identity_threshold`: cosine similarity for matching `face_db` (must match
-    /// the threshold used when clustering unknown faces in the engine session).
+    fn align_face_affine(&self, frame: &Mat, kps: &[[f32; 2]; 5]) -> Result<Mat> {
+        let ref_kps = [
+            [38.2946f32, 51.6963f32],  // left eye
+            [73.5318f32, 51.5014f32],  // right eye
+            [56.0252f32, 71.7366f32],  // nose
+            [41.5493f32, 92.3655f32],  // left mouth corner
+            [70.7299f32, 92.2041f32],  // right mouth corner
+        ];
+
+        let mut from_pts = Vector::<Point2f>::new();
+        for kp in kps.iter() {
+            from_pts.push(Point2f::new(kp[0], kp[1]));
+        }
+
+        let mut to_pts = Vector::<Point2f>::new();
+        for ref_kp in ref_kps.iter() {
+            to_pts.push(Point2f::new(ref_kp[0], ref_kp[1]));
+        }
+
+        let mut inliers = Mat::default();
+        let mut m = opencv::calib3d::estimate_affine_partial_2d(
+            &from_pts,
+            &to_pts,
+            &mut inliers,
+            opencv::calib3d::LMEDS,
+            3.0,
+            2000,
+            0.99,
+            10,
+        )?;
+
+        if m.empty() {
+            let mut src_3 = Vector::<Point2f>::new();
+            src_3.push(from_pts.get(0)?);
+            src_3.push(from_pts.get(1)?);
+            src_3.push(from_pts.get(2)?);
+
+            let mut dst_3 = Vector::<Point2f>::new();
+            dst_3.push(to_pts.get(0)?);
+            dst_3.push(to_pts.get(1)?);
+            dst_3.push(to_pts.get(2)?);
+
+            m = opencv::imgproc::get_affine_transform(&src_3, &dst_3)?;
+        }
+
+        let mut aligned = Mat::default();
+        opencv::imgproc::warp_affine(
+            frame,
+            &mut aligned,
+            &m,
+            Size::new(112, 112),
+            opencv::imgproc::INTER_LINEAR,
+            opencv::core::BORDER_CONSTANT,
+            opencv::core::Scalar::all(0.0),
+        )?;
+
+        Ok(aligned)
+    }
+
+    fn embed_aligned_face(&mut self, aligned: &Mat) -> Result<Vec<f32>> {
+        let area = 112 * 112;
+        let mut blob = vec![0f32; 3 * area];
+        for y in 0..112 {
+            for x in 0..112 {
+                let px: Vec3b = *aligned.at_2d::<Vec3b>(y as i32, x as i32)?;
+                let idx = y * 112 + x;
+                // BGR -> RGB and normalization
+                blob[idx] = (px[2] as f32 - 127.5) / 128.0;          // R
+                blob[idx + area] = (px[1] as f32 - 127.5) / 128.0;   // G
+                blob[idx + 2 * area] = (px[0] as f32 - 127.5) / 128.0; // B
+            }
+        }
+
+        let raw_embedding = self.run_arcface_with_retry(blob)?;
+
+        // L2 normalize
+        let norm = raw_embedding.iter().map(|x| x * x).sum::<f32>().sqrt().max(1e-8);
+        let normalized: Vec<f32> = raw_embedding.into_iter().map(|x| x / norm).collect();
+
+        Ok(normalized)
+    }
+
     pub fn detect_from_mat(
         &mut self,
         frame: &Mat,
@@ -419,12 +371,8 @@ impl FaceModel {
 
         let mut groups = Vec::new();
         for face in kept.into_iter() {
-            let mut aligned = Mat::default();
-            self.recognizer.align_crop(frame, &face.row, &mut aligned)?;
-            
-            let mut feature = Mat::default();
-            self.recognizer.feature(&aligned, &mut feature)?;
-            let embedding = mat_to_vec_f32(&feature)?;
+            let aligned = self.align_face_affine(frame, &face.landmarks)?;
+            let embedding = self.embed_aligned_face(&aligned)?;
 
             let (name, face_id) = match db.query_id(&embedding, identity_threshold) {
                 Some((n, id)) => (Some(n), id),
@@ -436,10 +384,10 @@ impl FaceModel {
                 name,
                 conf: face.score,
                 bbox: [
-                    face.bbox[0], 
-                    face.bbox[1], 
-                    face.bbox[0] + face.bbox[2], 
-                    face.bbox[1] + face.bbox[3]
+                    face.bbox[0],
+                    face.bbox[1],
+                    face.bbox[0] + face.bbox[2],
+                    face.bbox[1] + face.bbox[3],
                 ],
                 embedding,
             });
@@ -447,7 +395,6 @@ impl FaceModel {
         Ok(groups)
     }
 
-    /// Convenience: load image from path and detect faces on the full image.
     pub fn detect_from_path(
         &mut self,
         path: &str,
@@ -458,8 +405,6 @@ impl FaceModel {
         self.detect_from_mat(&frame, db, identity_threshold)
     }
 
-    /// Same as `detect_from_mat` but also returns the aligned Mat crop (112×112)
-    /// for each detected face, so callers can save it for debugging.
     pub fn detect_from_mat_with_aligned(
         &mut self,
         frame: &Mat,
@@ -469,11 +414,8 @@ impl FaceModel {
         let kept = self.detect_faces_raw(frame)?;
         let mut out = Vec::new();
         for face in kept {
-            let mut aligned = Mat::default();
-            self.recognizer.align_crop(frame, &face.row, &mut aligned)?;
-            let mut feature = Mat::default();
-            self.recognizer.feature(&aligned, &mut feature)?;
-            let embedding = mat_to_vec_f32(&feature)?;
+            let aligned = self.align_face_affine(frame, &face.landmarks)?;
+            let embedding = self.embed_aligned_face(&aligned)?;
             let (name, face_id) = match db.query_id(&embedding, identity_threshold) {
                 Some((n, id)) => (Some(n), id),
                 None => (None, "unknown_placeholder".to_string()),
@@ -500,11 +442,9 @@ impl FaceModel {
         let kept = self.detect_faces_raw(&frame)?;
         let mut features = Vec::new();
         for face in kept {
-            let mut aligned = Mat::default();
-            self.recognizer.align_crop(&frame, &face.row, &mut aligned)?;
-            let mut feature = Mat::default();
-            self.recognizer.feature(&aligned, &mut feature)?;
-            features.push(mat_to_vec_f32(&feature)?);
+            let aligned = self.align_face_affine(&frame, &face.landmarks)?;
+            let embedding = self.embed_aligned_face(&aligned)?;
+            features.push(embedding);
         }
         Ok(features)
     }

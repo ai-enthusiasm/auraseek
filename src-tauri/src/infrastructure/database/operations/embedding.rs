@@ -87,4 +87,68 @@ impl DbOperations {
         crate::log_info!("🧹 Qdrant collection '{}' deleted", collection);
         Ok(())
     }
+
+    pub async fn insert_face_embedding(
+        client: &Qdrant,
+        collection: &str,
+        media_id: &str,
+        face_id: &str,
+        bbox: [f32; 4],
+        embedding: Vec<f32>,
+    ) -> Result<()> {
+        let point_id = uuid::Uuid::new_v4().to_string();
+        let payload_json = serde_json::json!({
+            "media_id": media_id,
+            "face_id": face_id,
+            "bbox": bbox.to_vec(),
+            "source": "face"
+        });
+        let payload = Payload::try_from(payload_json)
+            .map_err(|e| anyhow::anyhow!("failed to create payload: {}", e))?;
+
+        let point = PointStruct::new(point_id, embedding, payload);
+        client.upsert_points(
+            UpsertPointsBuilder::new(collection, vec![point]).wait(true)
+        ).await.context("insert_face_embedding: upsert failed")?;
+
+        Ok(())
+    }
+
+    pub async fn delete_face_embeddings_for_media(
+        client: &Qdrant,
+        collection: &str,
+        media_id: &str,
+    ) -> Result<()> {
+        let filter = Filter::must([
+            Condition::matches("media_id", media_id.to_string()),
+            Condition::matches("source", "face".to_string()),
+        ]);
+        client.delete_points(
+            DeletePointsBuilder::new(collection).points(filter).wait(true)
+        ).await.context("delete_face_embeddings_for_media failed")?;
+        Ok(())
+    }
+
+    pub async fn vector_search_face(
+        client: &Qdrant,
+        collection: &str,
+        query_vec: &[f32],
+        threshold: f32,
+        limit: usize,
+    ) -> Result<Vec<(String, f32)>> {
+        let results = client.search_points(
+            SearchPointsBuilder::new(collection, query_vec.to_vec(), limit as u64)
+                .score_threshold(threshold)
+                .with_payload(true)
+        ).await.context("vector_search_face failed")?;
+
+        let hits: Vec<(String, f32)> = results.result.into_iter().filter_map(|p| {
+            let face_id = p.payload.get("face_id")?
+                .as_str()
+                .map(|s| s.to_string())?;
+            Some((face_id, p.score))
+        }).collect();
+
+        Ok(hits)
+    }
 }

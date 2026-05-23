@@ -204,7 +204,9 @@ pub async fn cmd_reset_database(app: tauri::AppHandle, state: State<'_, AppState
         let qdrant_guard = state.qdrant_client.lock().await;
         if let Some(ref client) = *qdrant_guard {
             let _ = client.delete_collection(collection).await;
+            let _ = client.delete_collection(crate::core::config::QDRANT_FACE_COLLECTION).await;
             let _ = crate::infrastructure::database::QdrantService::ensure_collection(client, collection, 384).await;
+            let _ = crate::infrastructure::database::QdrantService::ensure_collection(client, crate::core::config::QDRANT_FACE_COLLECTION, 512).await;
         }
     }
 

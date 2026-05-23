@@ -6,8 +6,8 @@ static GLOBAL_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 pub const MODEL_VISION_REL: &str = "models/vision_aura.onnx";
 pub const MODEL_TEXT_REL: &str = "models/text_aura.onnx";
 pub const MODEL_YOLO_REL: &str = "models/yolo26s-seg.onnx";
-pub const MODEL_YUNET_REL: &str = "models/face_detection_yunet_2022mar.onnx";
-pub const MODEL_SFACE_REL: &str = "models/face_recognition_sface_2021dec.onnx";
+pub const MODEL_SCRFD_REL: &str = "models/scrfd_2.5g_bnkps.onnx";
+pub const MODEL_ARCFACE_REL: &str = "models/arcface_resnet50.onnx";
 pub const TOKENIZER_VOCAB_REL: &str = "tokenizer/vocab.txt";
 pub const TOKENIZER_BPE_REL: &str = "tokenizer/bpe.codes";
 pub const FONT_DEJAVU_REL: &str = "fonts/DejaVuSans.ttf";
@@ -15,8 +15,8 @@ pub const FONT_DEJAVU_REL: &str = "fonts/DejaVuSans.ttf";
 pub const MODEL_VISION_NAME: &str = "vision_aura.onnx";
 pub const MODEL_TEXT_NAME: &str = "text_aura.onnx";
 pub const MODEL_YOLO_NAME: &str = "yolo26s-seg.onnx";
-pub const MODEL_YUNET_NAME: &str = "face_detection_yunet_2022mar.onnx";
-pub const MODEL_SFACE_NAME: &str = "face_recognition_sface_2021dec.onnx";
+pub const MODEL_SCRFD_NAME: &str = "scrfd_2.5g_bnkps.onnx";
+pub const MODEL_ARCFACE_NAME: &str = "arcface_resnet50.onnx";
 pub const TOKENIZER_VOCAB_NAME: &str = "vocab.txt";
 pub const TOKENIZER_BPE_NAME: &str = "bpe.codes";
 pub const FONT_DEJAVU_NAME: &str = "DejaVuSans.ttf";
@@ -26,13 +26,15 @@ pub const AI_ASSETS_BASE_URL: &str = "https://github.com/ai-enthusiasm/auraseek/
 pub const AI_ASSETS: &[(&str, &str)] = &[
     (MODEL_TEXT_NAME, MODEL_TEXT_REL),
     (MODEL_VISION_NAME, MODEL_VISION_REL),
-    (MODEL_SFACE_NAME, MODEL_SFACE_REL),
-    (MODEL_YUNET_NAME, MODEL_YUNET_REL),
+    (MODEL_ARCFACE_NAME, MODEL_ARCFACE_REL),
+    (MODEL_SCRFD_NAME, MODEL_SCRFD_REL),
     (MODEL_YOLO_NAME, MODEL_YOLO_REL),
     (TOKENIZER_BPE_NAME, TOKENIZER_BPE_REL),
     (TOKENIZER_VOCAB_NAME, TOKENIZER_VOCAB_REL),
     (FONT_DEJAVU_NAME, FONT_DEJAVU_REL),
 ];
+
+pub const QDRANT_FACE_COLLECTION: &str = "face_embeddings";
 
 #[derive(Debug, Clone)]
 pub enum DevicePreference {
@@ -108,9 +110,9 @@ impl Default for AppConfig {
             data_dir,
             log_path,
 
-            face_detection_threshold: 0.92,
-            face_identity_threshold: 0.51,
-            face_nms_iou_threshold: 0.8,
+            face_detection_threshold: 0.5,
+            face_identity_threshold: 0.6,
+            face_nms_iou_threshold: 0.4,
             face_top_k: 5000,
             yolo_confidence: 0.5,
             yolo_iou: 0.9,

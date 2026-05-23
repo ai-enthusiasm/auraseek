@@ -110,6 +110,9 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
                     if let Err(e) = QdrantService::ensure_collection(&client, &config.qdrant_collection, 384).await {
                         crate::log_warn!("⚠️ Failed to ensure Qdrant collection: {}", e);
                     }
+                    if let Err(e) = QdrantService::ensure_collection(&client, crate::core::config::QDRANT_FACE_COLLECTION, 512).await {
+                        crate::log_warn!("⚠️ Failed to ensure Qdrant face collection: {}", e);
+                    }
                     crate::log_info!("✅ Qdrant client connected on port {}", connect_port);
                     *guard = Some(client);
                 }

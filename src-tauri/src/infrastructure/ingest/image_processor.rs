@@ -16,10 +16,11 @@ pub const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v
 pub async fn analyze_image_raw(
     path_str: &str,
     engine: &Arc<Mutex<Option<AuraSeekEngine>>>,
+    qdrant: Option<&qdrant_client::Qdrant>,
 ) -> Option<EngineOutput> {
     let mut eng_guard = engine.lock().await;
     let eng = eng_guard.as_mut()?;
-    match eng.process_image(path_str) {
+    match eng.process_image(path_str, qdrant).await {
         Ok(output) => Some(output),
         Err(e) => {
             crate::log_warn!("🤖 AI error for {}: {}", path_str, e);
@@ -68,7 +69,10 @@ pub async fn process_image_file(
     thumb_cache_dir: Option<&Path>,
 ) {
     let t0 = std::time::Instant::now();
-    let output = match analyze_image_raw(path_str, engine).await {
+    let qdrant_guard = qdrant.lock().await;
+    let qdrant_client = qdrant_guard.as_ref();
+
+    let output = match analyze_image_raw(path_str, engine, qdrant_client).await {
         Some(o) => o,
         None => return,
     };
@@ -123,13 +127,15 @@ pub async fn process_image_file(
     if !output.vision_embedding.is_empty() {
         let config = crate::core::config::AppConfig::global();
         let collection = &config.qdrant_collection;
-        let qdrant_guard = qdrant.lock().await;
-        if let Some(ref client) = *qdrant_guard {
+        if let Some(client) = qdrant_client {
             let mut deleted_old = true;
             if let Err(e) = DbOperations::delete_embeddings_for_media(client, collection, media_id).await {
                 crate::log_warn!("⚠️ delete_embeddings_for_media failed for {}: {:#}", media_id, e);
                 deleted_old = false;
             }
+            // Delete old face embeddings for this media if reprocessing
+            let _ = DbOperations::delete_face_embeddings_for_media(client, crate::core::config::QDRANT_FACE_COLLECTION, media_id).await;
+
             if deleted_old {
                 if let Err(e) = DbOperations::insert_embedding(
                     client, collection, media_id, "image", None, None, output.vision_embedding
@@ -137,6 +143,24 @@ pub async fn process_image_file(
                     crate::log_warn!("⚠️ insert_embedding failed for {}: {:#}", media_id, e);
                 } else {
                     embedding_ok = true;
+                }
+
+                // Insert new face embeddings to Qdrant face collection
+                for f in &output.faces {
+                    if !f.embedding.is_empty() {
+                        if let Err(e) = DbOperations::insert_face_embedding(
+                            client,
+                            crate::core::config::QDRANT_FACE_COLLECTION,
+                            media_id,
+                            &f.face_id,
+                            f.bbox,
+                            f.embedding.clone(),
+                        ).await {
+                            crate::log_warn!("⚠️ insert_face_embedding failed for face_id={} in {}: {:#}", f.face_id, media_id, e);
+                        } else {
+                            crate::log_info!("  👤 Saved face embedding to Qdrant: face_id={}", f.face_id);
+                        }
+                    }
                 }
             }
         } else {

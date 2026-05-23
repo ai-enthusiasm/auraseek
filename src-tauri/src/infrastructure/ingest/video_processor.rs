@@ -130,25 +130,26 @@ pub async fn process_video(
     let mut embed_count = 0usize;
     let mut last_stored_emb: Option<Vec<f32>> = None;
 
+    let qdrant_guard = qdrant.lock().await;
+    let qdrant_client = qdrant_guard.as_ref();
     let scenes_clone = scenes.clone();
     let config = crate::core::config::AppConfig::global();
     let collection = &config.qdrant_collection;
     let mut qdrant_ready_for_embeddings = false;
     let mut embedding_error = false;
 
-    {
-        let qdrant_guard = qdrant.lock().await;
-        if let Some(ref client) = *qdrant_guard {
-            if let Err(e) = DbOperations::delete_embeddings_for_media(client, collection, media_id).await {
-                log_warn!("  ⚠️ delete_embeddings_for_media for video {}: {:#}", media_id, e);
-                embedding_error = true;
-            } else {
-                qdrant_ready_for_embeddings = true;
-            }
-        } else {
-            log_warn!("  ⚠️ Qdrant client unavailable for video {}; media will be reprocessed later", media_id);
+    if let Some(client) = qdrant_client {
+        // Delete previous face embeddings
+        let _ = DbOperations::delete_face_embeddings_for_media(client, crate::core::config::QDRANT_FACE_COLLECTION, media_id).await;
+        if let Err(e) = DbOperations::delete_embeddings_for_media(client, collection, media_id).await {
+            log_warn!("  ⚠️ delete_embeddings_for_media for video {}: {:#}", media_id, e);
             embedding_error = true;
+        } else {
+            qdrant_ready_for_embeddings = true;
         }
+    } else {
+        log_warn!("  ⚠️ Qdrant client unavailable for video {}; media will be reprocessed later", media_id);
+        embedding_error = true;
     }
 
     for frame_idx in &frame_jobs {
@@ -159,7 +160,7 @@ pub async fn process_video(
         let frame_path = tmp_dir.join(format!("s{}_f{}.debug.jpg", s_idx, frame_idx));
         let frame_path_str = frame_path.to_string_lossy().to_string();
 
-        let output = match super::image_processor::analyze_image_raw(&frame_path_str, engine).await {
+        let output = match super::image_processor::analyze_image_raw(&frame_path_str, engine, qdrant_client).await {
             Some(o) => o,
             None => continue,
         };
@@ -209,6 +210,26 @@ pub async fn process_video(
             if is_best { face_frame_map.insert(f.face_id.clone(), *frame_idx); }
         }
 
+        // Insert new face embeddings to Qdrant face collection for this frame
+        if let Some(client) = qdrant_client {
+            for f in &output.faces {
+                if !f.embedding.is_empty() {
+                    if let Err(e) = DbOperations::insert_face_embedding(
+                        client,
+                        crate::core::config::QDRANT_FACE_COLLECTION,
+                        media_id,
+                        &f.face_id,
+                        f.bbox,
+                        f.embedding.clone(),
+                    ).await {
+                        log_warn!("  ⚠️ insert_face_embedding failed for face_id={} in video frame {}: {:#}", f.face_id, frame_idx, e);
+                    } else {
+                        log_info!("  👤 Saved video frame face embedding to Qdrant: face_id={}", f.face_id);
+                    }
+                }
+            }
+        }
+
         if qdrant_ready_for_embeddings && !output.vision_embedding.is_empty() {
             let dedup_thr = config.duplicate_score_threshold;
             let skip_dedup = last_stored_emb.as_ref().is_some_and(|prev| {
@@ -222,8 +243,7 @@ pub async fn process_video(
                 continue;
             }
 
-            let qdrant_guard = qdrant.lock().await;
-            if let Some(ref client) = *qdrant_guard {
+            if let Some(client) = qdrant_client {
                 if let Err(e) = DbOperations::insert_embedding(
                     client, collection, media_id, "video_frame",
                     Some(timestamp), Some(*frame_idx as u32),
