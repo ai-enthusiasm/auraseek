@@ -131,7 +131,7 @@ impl YoloProcessor {
             *v = 1.0 / (1.0 + (-(*v).clamp(-88.0, 88.0)).exp());
         }
 
-        let mask_640 = Self::resize_bilinear(&mask_flat, proto_h, proto_w, 640, 640);
+        let mask_640 = Self::resize_bilinear_optimized(&mask_flat, proto_h, proto_w, 640, 640);
 
         let img_w_in = (orig_w as f32 * ratio).round() as usize;
         let img_h_in = (orig_h as f32 * ratio).round() as usize;
@@ -146,50 +146,95 @@ impl YoloProcessor {
                 .copy_from_slice(&mask_640[src_off..src_off + img_w_in]);
         }
 
-        let mask_orig = Self::resize_bilinear(
-            &cropped, img_h_in, img_w_in,
-            orig_h as usize, orig_w as usize,
-        );
+        // Map original bounding box coordinates back to the cropped mask coordinates
+        let cx1 = ((bx1 as f32 * ratio).floor() as usize).min(img_w_in.saturating_sub(1));
+        let cy1 = ((by1 as f32 * ratio).floor() as usize).min(img_h_in.saturating_sub(1));
+        let cx2 = ((bx2 as f32 * ratio).ceil() as usize).clamp(cx1 + 1, img_w_in);
+        let cy2 = ((by2 as f32 * ratio).ceil() as usize).clamp(cy1 + 1, img_h_in);
+
+        let sub_w = cx2 - cx1;
+        let sub_h = cy2 - cy1;
+        let mut sub_mask = vec![0.0f32; sub_w * sub_h];
+        for r in 0..sub_h {
+            let src_off = (cy1 + r) * img_w_in + cx1;
+            let dst_off = r * sub_w;
+            sub_mask[dst_off..dst_off + sub_w]
+                .copy_from_slice(&cropped[src_off..src_off + sub_w]);
+        }
+
+        let bw = (bx2.saturating_sub(bx1)) as usize;
+        let bh = (by2.saturating_sub(by1)) as usize;
 
         let ow = orig_w as usize;
         let oh = orig_h as usize;
         let mut binary = vec![0u8; oh * ow];
-        for row in 0..oh {
-            for col in 0..ow {
-                let in_bbox = col >= bx1 as usize && col < bx2 as usize
-                           && row >= by1 as usize && row < by2 as usize;
-                if in_bbox && mask_orig[row * ow + col] > 0.5 {
-                    binary[row * ow + col] = 1;
+
+        if bw > 0 && bh > 0 {
+            let resized_sub = Self::resize_bilinear_optimized(
+                &sub_mask,
+                sub_h, sub_w,
+                bh, bw,
+            );
+
+            if !resized_sub.is_empty() {
+                for dy in 0..bh {
+                    let dst_y = by1 as usize + dy;
+                    if dst_y >= oh { break; }
+                    let dst_row = dst_y * ow;
+                    let src_row = dy * bw;
+                    for dx in 0..bw {
+                        let dst_x = bx1 as usize + dx;
+                        if dst_x >= ow { break; }
+                        if resized_sub[src_row + dx] > 0.5 {
+                            binary[dst_row + dst_x] = 1;
+                        }
+                    }
                 }
             }
         }
+
         binary
     }
 
-    fn resize_bilinear(
+    fn resize_bilinear_optimized(
         src:   &[f32],
         src_h: usize, src_w: usize,
         dst_h: usize, dst_w: usize,
     ) -> Vec<f32> {
-        let mut dst    = vec![0.0f32; dst_h * dst_w];
-        let scale_h    = src_h as f32 / dst_h as f32;
-        let scale_w    = src_w as f32 / dst_w as f32;
+        if dst_h == 0 || dst_w == 0 {
+            return vec![];
+        }
+        let mut dst = vec![0.0f32; dst_h * dst_w];
+        let scale_h = src_h as f32 / dst_h as f32;
+        let scale_w = src_w as f32 / dst_w as f32;
+
+        // Precompute x weights and indices
+        let mut x_weights = Vec::with_capacity(dst_w);
+        for dx in 0..dst_w {
+            let sx = ((dx as f32 + 0.5) * scale_w - 0.5).max(0.0);
+            let x0 = (sx as usize).min(src_w - 1);
+            let x1 = (x0 + 1).min(src_w - 1);
+            let wx = sx - x0 as f32;
+            x_weights.push((x0, x1, wx));
+        }
 
         for dy in 0..dst_h {
+            let sy = ((dy as f32 + 0.5) * scale_h - 0.5).max(0.0);
+            let y0 = (sy as usize).min(src_h - 1);
+            let y1 = (y0 + 1).min(src_h - 1);
+            let wy = sy - y0 as f32;
+
+            let row_y0_offset = y0 * src_w;
+            let row_y1_offset = y1 * src_w;
+            let dest_row_offset = dy * dst_w;
+
             for dx in 0..dst_w {
-                let sy = ((dy as f32 + 0.5) * scale_h - 0.5).max(0.0);
-                let sx = ((dx as f32 + 0.5) * scale_w - 0.5).max(0.0);
-                let y0 = (sy as usize).min(src_h - 1);
-                let x0 = (sx as usize).min(src_w - 1);
-                let y1 = (y0 + 1).min(src_h - 1);
-                let x1 = (x0 + 1).min(src_w - 1);
-                let wy = sy - y0 as f32;
-                let wx = sx - x0 as f32;
-                let v  = src[y0 * src_w + x0] * (1.0 - wy) * (1.0 - wx)
-                       + src[y0 * src_w + x1] * (1.0 - wy) * wx
-                       + src[y1 * src_w + x0] * wy * (1.0 - wx)
-                       + src[y1 * src_w + x1] * wy * wx;
-                dst[dy * dst_w + dx] = v;
+                let (x0, x1, wx) = x_weights[dx];
+                let v = src[row_y0_offset + x0] * (1.0 - wy) * (1.0 - wx)
+                      + src[row_y0_offset + x1] * (1.0 - wy) * wx
+                      + src[row_y1_offset + x0] * wy * (1.0 - wx)
+                      + src[row_y1_offset + x1] * wy * wx;
+                dst[dest_row_offset + dx] = v;
             }
         }
         dst

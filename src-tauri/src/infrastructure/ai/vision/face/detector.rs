@@ -273,6 +273,78 @@ impl FaceModel {
                 continue;
             }
 
+            // =========================================================================
+            // BỘ LỌC CHẤT LƯỢNG KHUÔN MẶT (ĐEO KHẨU TRANG, MẶT NGHIÊNG, SAI LỆCH)
+            // Bạn có thể tự do điều chỉnh các ngưỡng (Threshold) dưới đây:
+            // =========================================================================
+
+            // --- 1. Lọc mặt nghiêng (Side face / Profile view) ---
+            // Tỷ lệ đối xứng của mũi so với mắt trái & mắt phải theo chiều ngang.
+            // Nếu góc quay mặt quá lớn, tỷ lệ này sẽ giảm mạnh.
+            let dx_nose_le = (face.landmarks[2][0] - face.landmarks[0][0]).abs();
+            let dx_nose_re = (face.landmarks[2][0] - face.landmarks[1][0]).abs();
+            let ratio_eyes_symmetry = if dx_nose_le > dx_nose_re {
+                dx_nose_re / (dx_nose_le + 1e-5)
+            } else {
+                dx_nose_le / (dx_nose_re + 1e-5)
+            };
+
+            // Tỷ lệ đối xứng của mũi so với mép miệng trái & mép miệng phải.
+            let dx_nose_lm = (face.landmarks[2][0] - face.landmarks[3][0]).abs();
+            let dx_nose_rm = (face.landmarks[2][0] - face.landmarks[4][0]).abs();
+            let ratio_mouth_symmetry = if dx_nose_lm > dx_nose_rm {
+                dx_nose_rm / (dx_nose_lm + 1e-5)
+            } else {
+                dx_nose_lm / (dx_nose_rm + 1e-5)
+            };
+
+            // NGƯỠNG MẶT NGHIÊNG (PROFILE THRESHOLDS):
+            // Ngưỡng càng cao (gần 1.0) thì yêu cầu mặt càng thẳng trực diện.
+            // Mặc định: 0.30 cho mắt, 0.25 cho miệng.
+            let th_eye_sym = 0.30;
+            let th_mouth_sym = 0.25;
+
+            if ratio_eyes_symmetry < th_eye_sym || ratio_mouth_symmetry < th_mouth_sym {
+                continue; // Bỏ qua mặt quá nghiêng
+            }
+
+            // --- 2. Lọc đeo khẩu trang (Mask occlusion) & biến dạng miệng ---
+            // Khoảng cách giữa 2 mắt
+            let eye_w_dx = face.landmarks[0][0] - face.landmarks[1][0];
+            let eye_w_dy = face.landmarks[0][1] - face.landmarks[1][1];
+            let eye_width = (eye_w_dx * eye_w_dx + eye_w_dy * eye_w_dy).sqrt();
+
+            // Khoảng cách giữa 2 mép miệng
+            let mouth_w_dx = face.landmarks[3][0] - face.landmarks[4][0];
+            let mouth_w_dy = face.landmarks[3][1] - face.landmarks[4][1];
+            let mouth_width = (mouth_w_dx * mouth_w_dx + mouth_w_dy * mouth_w_dy).sqrt();
+
+            // Tỷ lệ độ rộng miệng so với độ rộng mắt.
+            // Khi đeo khẩu trang, các điểm mốc ở miệng bị che khuất và xu hướng co cụm lại gần nhau.
+            let ratio_mouth_eye_width = mouth_width / (eye_width + 1e-5);
+
+            // Trung điểm của hai mép miệng
+            let mouth_mid_x = (face.landmarks[3][0] + face.landmarks[4][0]) / 2.0;
+            let mouth_mid_y = (face.landmarks[3][1] + face.landmarks[4][1]) / 2.0;
+            
+            // Khoảng cách từ mũi đến miệng
+            let nose_mouth_dx = face.landmarks[2][0] - mouth_mid_x;
+            let nose_mouth_dy = face.landmarks[2][1] - mouth_mid_y;
+            let nose_mouth_dist = (nose_mouth_dx * nose_mouth_dx + nose_mouth_dy * nose_mouth_dy).sqrt();
+
+            // Tỷ lệ khoảng cách mũi-miệng so với khoảng cách hai mắt.
+            let ratio_nose_mouth_eye = nose_mouth_dist / (eye_width + 1e-5);
+
+            // NGƯỠNG ĐEO KHẨU TRANG & BIẾN DẠNG (MASK/OCCLUSION THRESHOLDS):
+            // th_mouth_eye_min: Tỷ lệ tối thiểu giữa độ rộng khuôn miệng và khoảng cách mắt. (Mặc định: 0.40)
+            // th_nose_mouth_min: Tỷ lệ tối thiểu giữa khoảng cách dọc từ mũi-miệng so với khoảng cách mắt. (Mặc định: 0.30)
+            let th_mouth_eye_min = 0.40;
+            let th_nose_mouth_min = 0.30;
+
+            if ratio_mouth_eye_width < th_mouth_eye_min || ratio_nose_mouth_eye < th_nose_mouth_min {
+                continue; // Bỏ qua do nghi ngờ đeo khẩu trang hoặc miệng bị che khuất
+            }
+
             final_faces.push(face);
         }
 

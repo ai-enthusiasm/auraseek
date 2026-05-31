@@ -19,11 +19,14 @@ use opencv::{
     prelude::*,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct EngineOutput {
     pub objects:          Vec<DetectionRecord>,
     pub faces:            Vec<FaceGroup>,
     pub vision_embedding: Vec<f32>,
+    /// The decoded image from disk — reused by thumbnail generator to avoid re-read.
+    pub decoded_image:    Option<image::DynamicImage>,
+    pub dur_total:        u128,
 }
 
 fn default_config() -> EngineConfig {
@@ -105,7 +108,11 @@ impl AuraSeekEngine {
 
     pub fn new(config: EngineConfig) -> Result<Self> {
         let app_cfg = AppConfig::global();
-        let num_threads = app_cfg.num_threads;
+        Self::new_with_threads(config, app_cfg.num_threads)
+    }
+
+    pub fn new_with_threads(config: EngineConfig, num_threads: usize) -> Result<Self> {
+        let app_cfg = AppConfig::global();
 
         log_info!("loading ai models | threads: {}", num_threads);
         let aura = AuraModel::new(&config.vision_path, &config.text_path, num_threads)?;
@@ -146,21 +153,29 @@ impl AuraSeekEngine {
         img_path: &str,
         qdrant: Option<&qdrant_client::Qdrant>,
     ) -> Result<EngineOutput> {
-        // Optimization: Read once from disk, decode once into 'image' crate, 
-        // then use bytes directly for OpenCV to avoid 3 separate disk reads.
+        let t_total = std::time::Instant::now();
+
+        // 1. Image loading & decoding
+        let t_load = std::time::Instant::now();
         let bytes = std::fs::read(img_path)?;
         let img = image::load_from_memory(&bytes)?;
+        let dur_load = t_load.elapsed().as_millis();
 
-        // 1. Vision embedding
+        // 2. Vision embedding
+        let t_embed = std::time::Instant::now();
         let vision_emb = self.aura.encode_image(preprocess_aura_from_image(&img), 256, 256)
             .unwrap_or_default();
+        let dur_embed = t_embed.elapsed().as_millis();
 
-        // 2. YOLO detection + segmentation
+        // 3. YOLO detection + segmentation
+        let t_yolo = std::time::Instant::now();
         let lb = letterbox_640_from_image(&img);
         let raw = self.yolo.detect(lb.blob.clone())?;
         let objects = YoloProcessor::postprocess(&raw, &lb, self.yolo_confidence, self.yolo_iou);
+        let dur_yolo = t_yolo.elapsed().as_millis();
 
-        // 3. Face detection
+        // 4. Face detection
+        let t_face = std::time::Instant::now();
         let mut faces = vec![];
         if let Some(ref mut fm) = self.face {
             fm.set_score_threshold(self.face_detection_threshold);
@@ -240,7 +255,20 @@ impl AuraSeekEngine {
                 }
             }
         }
+        let dur_face = t_face.elapsed().as_millis();
 
-        Ok(EngineOutput { objects, faces, vision_embedding: vision_emb })
+        let filename = img_path.split('/').last().unwrap_or(img_path);
+        let dur_total = t_total.elapsed().as_millis();
+        crate::log_info!(
+            "⏱️  AI Details for {} | Load: {}ms | CLIP: {}ms | YOLO: {}ms | Face: {}ms | AI Total: {}ms",
+            filename,
+            dur_load,
+            dur_embed,
+            dur_yolo,
+            dur_face,
+            dur_total
+        );
+
+        Ok(EngineOutput { objects, faces, vision_embedding: vision_emb, decoded_image: Some(img), dur_total })
     }
 }
