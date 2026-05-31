@@ -3,7 +3,7 @@ use crate::core::config::AppConfig;
 use crate::infrastructure::database::SqliteDb;
 use crate::core::models::{DuplicateGroup, DuplicateItem};
 use qdrant_client::Qdrant;
-use qdrant_client::qdrant::{vector_output, Condition, Filter, ScrollPointsBuilder, SearchPointsBuilder};
+use qdrant_client::qdrant::{vector_output, Condition, Filter, ScrollPointsBuilder};
 use super::DbOperations;
 use std::sync::Arc;
 
@@ -38,17 +38,25 @@ impl DbOperations {
         media_type: Option<&str>,
         thumb_cache_dir: Option<&std::path::Path>,
     ) -> Result<Vec<DuplicateGroup>> {
-        let mut groups: Vec<DuplicateGroup> = vec![];
-        let base = source_dir.trim_end_matches('/');
-        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let source_dir_owned = source_dir.to_string();
+        let media_type_owned = media_type.map(|s| s.to_string());
+        let thumb_cache_dir_owned = thumb_cache_dir.map(|p| p.to_path_buf());
 
-        // ── 1. Exact SHA-256 duplicates (sync SQLite) ──
-        {
-            let guard = sqlite.lock().unwrap();
+        // ── Task 1: Exact SHA-256 duplicates (sync SQLite offloaded) ──
+        let sqlite_h = sqlite.clone();
+        let source_dir_h = source_dir_owned.clone();
+        let media_type_h = media_type_owned.clone();
+        let thumb_cache_dir_h = thumb_cache_dir_owned.clone();
+
+        let hash_task = tokio::task::spawn_blocking(move || -> Result<Vec<DuplicateGroup>> {
+            let mut groups: Vec<DuplicateGroup> = vec![];
+            let base = source_dir_h.trim_end_matches('/');
+
+            let guard = sqlite_h.lock().unwrap();
             let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
             let conn = db.conn();
 
-            let sha_sql = match media_type {
+            let sha_sql = match media_type_h.as_deref() {
                 Some(t) => format!(
                     "SELECT file_sha256, GROUP_CONCAT(id) AS ids, COUNT(*) AS cnt
                      FROM media WHERE deleted_at IS NULL AND is_hidden = 0 AND media_type = '{}'
@@ -79,27 +87,46 @@ impl DbOperations {
                 })?.filter_map(|r| r.ok()).collect();
 
                 if items.len() < 2 { continue; }
-                for (id, _, _, _) in &items { covered.insert(id.clone()); }
                 groups.push(DuplicateGroup {
                     group_id: sha256.clone(),
                     reason: "Trùng Hash — giống nhau 100%".into(),
                     items: items.into_iter().map(|(id, name, size, thumb)| {
                         let file_path = name.as_ref().map(|n| format!("{}/{}", base, n)).unwrap_or_default();
-                        let thumbnail_path = thumb.map(|t| if std::path::Path::new(&t).is_absolute() { t } else { format!("{}/{}", base, t) })
-                            .or_else(|| { if media_type != Some("video") { return None; } resolve_video_thumb_fallback(base, name.as_deref()?, thumb_cache_dir) });
+                        let thumbnail_path = thumb.map(|t| {
+                            if std::path::Path::new(&t).is_absolute() {
+                                t
+                            } else if let Some(ref cache_dir) = thumb_cache_dir_h {
+                                cache_dir.join(&t).to_string_lossy().to_string()
+                            } else {
+                                format!("{}/{}", base, t)
+                            }
+                        })
+                        .or_else(|| {
+                            if media_type_h.as_deref() != Some("video") { return None; }
+                            resolve_video_thumb_fallback(base, name.as_deref()?, thumb_cache_dir_h.as_deref())
+                        });
                         DuplicateItem { media_id: id, file_path, size: size as u64, thumbnail_path }
                     }).collect(),
                 });
             }
-        }
+            Ok(groups)
+        });
 
-        // ── 2. pHash near-duplicate (Hamming <= 8, sync SQLite) ──
-        {
-            let guard = sqlite.lock().unwrap();
+        // ── Task 2: pHash near-duplicate (Hamming <= 6, sync SQLite offloaded) ──
+        let sqlite_p = sqlite.clone();
+        let source_dir_p = source_dir_owned.clone();
+        let media_type_p = media_type_owned.clone();
+        let thumb_cache_dir_p = thumb_cache_dir_owned.clone();
+
+        let phash_task = tokio::task::spawn_blocking(move || -> Result<Vec<DuplicateGroup>> {
+            let mut groups: Vec<DuplicateGroup> = vec![];
+            let base = source_dir_p.trim_end_matches('/');
+
+            let guard = sqlite_p.lock().unwrap();
             let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
             let conn = db.conn();
 
-            let phash_sql = match media_type {
+            let phash_sql = match media_type_p.as_deref() {
                 Some(t) => format!(
                     "SELECT id, file_name, file_size, file_phash, thumbnail FROM media
                      WHERE deleted_at IS NULL AND is_hidden = 0 AND file_phash IS NOT NULL AND media_type = '{}'", t),
@@ -125,7 +152,7 @@ impl DbOperations {
             let mut parent: Vec<usize> = (0..n).collect();
             for i in 0..n {
                 for j in (i+1)..n {
-                    if hamming(phash_items[i].3, phash_items[j].3) <= 8 {
+                    if hamming(phash_items[i].3, phash_items[j].3) <= 6 {
                         let ri = find(&mut parent, i);
                         let rj = find(&mut parent, j);
                         if ri != rj { parent[ri] = rj; }
@@ -137,8 +164,7 @@ impl DbOperations {
             for (_root, idxs) in ph_clusters {
                 if idxs.len() < 2 { continue; }
                 let ids: Vec<&str> = idxs.iter().map(|&i| phash_items[i].0.as_str()).collect();
-                if ids.iter().all(|id| covered.contains(*id)) { continue; }
-                for id in &ids { covered.insert(id.to_string()); }
+
                 groups.push(DuplicateGroup {
                     group_id: format!("phash_{}", ids[0]),
                     reason: "Ảnh gần giống nhau (pHash — cùng nội dung nhưng khác kích thước/nén)".into(),
@@ -148,21 +174,40 @@ impl DbOperations {
                             media_id: item.0.clone(),
                             file_path: item.1.as_ref().map(|n| format!("{}/{}", base, n)).unwrap_or_default(),
                             size: item.2,
-                            thumbnail_path: item.4.as_ref().map(|t| if std::path::Path::new(t).is_absolute() { t.clone() } else { format!("{}/{}", base, t) })
-                                .or_else(|| { if media_type != Some("video") { return None; } resolve_video_thumb_fallback(base, item.1.as_deref()?, thumb_cache_dir) }),
+                            thumbnail_path: item.4.as_ref().map(|t| {
+                                if std::path::Path::new(t).is_absolute() {
+                                    t.clone()
+                                } else if let Some(ref cache_dir) = thumb_cache_dir_p {
+                                    cache_dir.join(t).to_string_lossy().to_string()
+                                } else {
+                                    format!("{}/{}", base, t)
+                                }
+                            })
+                            .or_else(|| {
+                                if media_type_p.as_deref() != Some("video") { return None; }
+                                resolve_video_thumb_fallback(base, item.1.as_deref()?, thumb_cache_dir_p.as_deref())
+                            }),
                         }
                     }).collect(),
                 });
             }
-        }
+            Ok(groups)
+        });
 
-        // ── 3. Vision vector similarity via Qdrant nearest-neighbor search ──
-        {
+        // ── Task 3: Vision vector similarity via Qdrant (scroll + fast in-memory cosine matching) ──
+        let sqlite_v = sqlite.clone();
+        let qdrant_v = qdrant.clone();
+        let collection_v = collection.to_string();
+        let source_dir_v = source_dir_owned.clone();
+        let media_type_v = media_type_owned.clone();
+        let thumb_cache_dir_v = thumb_cache_dir_owned.clone();
+
+        let vector_task = tokio::spawn(async move {
             let cfg = AppConfig::global();
             let duplicate_threshold = cfg.duplicate_score_threshold;
             let scroll_page = cfg.duplicate_scroll_page_size as u32;
 
-            let source_filter = match media_type {
+            let source_filter = match media_type_v.as_deref() {
                 Some("video") => "video_frame",
                 _ => "image",
             };
@@ -174,7 +219,7 @@ impl DbOperations {
             let mut all_points = Vec::new();
             let mut next_offset: Option<qdrant_client::qdrant::PointId> = None;
             loop {
-                let mut builder = ScrollPointsBuilder::new(collection)
+                let mut builder = ScrollPointsBuilder::new(&collection_v)
                     .filter(filter.clone())
                     .limit(scroll_page)
                     .with_vectors(true)
@@ -182,7 +227,7 @@ impl DbOperations {
                 if let Some(ref offset) = next_offset {
                     builder = builder.offset(offset.clone());
                 }
-                let resp = qdrant.scroll(builder).await?;
+                let resp = qdrant_v.scroll(builder).await?;
                 let points = resp.result;
                 let n_page = points.len();
                 all_points.extend(points);
@@ -216,44 +261,31 @@ impl DbOperations {
             }
             let rep: Vec<(&EmbRow, String)> = rep_embs.into_iter().map(|(mid, (e, _))| (e, mid)).collect();
 
+            let mut groups: Vec<DuplicateGroup> = vec![];
+
             if rep.len() > 1 {
+                // Pre-normalize all embeddings for extremely fast dot-product cosine similarity
+                let rep_vecs: Vec<Vec<f32>> = rep.iter().map(|(e, _)| {
+                    let mut vec = e.vec.clone();
+                    let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+                    let divisor = if norm > 0.0 { norm } else { 1.0 };
+                    for x in &mut vec {
+                        *x /= divisor;
+                    }
+                    vec
+                }).collect();
+
                 let mut pairs: Vec<(usize, usize)> = Vec::new();
-                let index_by_media_id: std::collections::HashMap<String, usize> = rep
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, (_, media_id))| (media_id.clone(), idx))
-                    .collect();
-
                 for i in 0..rep.len() {
-                    let query_vec = rep[i].0.vec.clone();
-                    let resp = qdrant.search_points(
-                        SearchPointsBuilder::new(collection, query_vec, rep.len() as u64)
-                            .filter(filter.clone())
-                            .score_threshold(duplicate_threshold)
-                            .with_payload(true)
-                    ).await?;
-
-                    for hit in resp.result {
-                        let Some(hit_media_id) = hit.payload
-                            .get("media_id")
-                            .and_then(|v| v.as_str())
-                        else {
-                            continue;
-                        };
-                        if hit_media_id == &rep[i].1 {
-                            continue;
-                        }
-                        let Some(&j) = index_by_media_id.get(hit_media_id) else {
-                            continue;
-                        };
-                        if i < j {
+                    let v_i = &rep_vecs[i];
+                    for j in (i + 1)..rep.len() {
+                        let v_j = &rep_vecs[j];
+                        let sim = v_i.iter().zip(v_j.iter()).map(|(a, b)| a * b).sum::<f32>();
+                        if sim >= duplicate_threshold {
                             pairs.push((i, j));
                         }
                     }
                 }
-
-                pairs.sort_unstable();
-                pairs.dedup();
 
                 if !pairs.is_empty() {
                     let mut par: Vec<usize> = (0..rep.len()).collect();
@@ -265,8 +297,10 @@ impl DbOperations {
                     let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
                     for i in 0..rep.len() { clusters.entry(find(&mut par, i)).or_default().push(i); }
 
-                    // Lock SQLite again for the final DB lookups
-                    let guard = sqlite.lock().unwrap();
+                    let base = source_dir_v.trim_end_matches('/');
+
+                    // Lock SQLite for the final DB lookups
+                    let guard = sqlite_v.lock().unwrap();
                     let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
                     let conn = db.conn();
 
@@ -274,8 +308,6 @@ impl DbOperations {
                     for (_root, idxs) in clusters {
                         if idxs.len() < 2 { continue; }
                         let ids: Vec<String> = idxs.iter().map(|&i| rep[i].1.clone()).collect();
-                        if ids.iter().all(|id| covered.contains(id)) { continue; }
-                        for id in &ids { covered.insert(id.clone()); }
 
                         let placeholders: String = ids.iter().enumerate()
                             .map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
@@ -289,7 +321,7 @@ impl DbOperations {
                         })?.filter_map(|r| r.ok()).collect();
 
                         if items.len() < 2 { continue; }
-                        let reason = match media_type {
+                        let reason = match media_type_v.as_deref() {
                             Some("video") => "Video gần giống nhau (AI phát hiện đoạn đầu tương tự ≥ 92%)",
                             _ => "Ảnh gần giống nhau (AI phát hiện ≥ 92%)",
                         };
@@ -298,8 +330,19 @@ impl DbOperations {
                             reason: reason.into(),
                             items: items.into_iter().map(|(id, name, size, thumb)| {
                                 let file_path = name.as_ref().map(|n| format!("{}/{}", base, n)).unwrap_or_default();
-                                let thumbnail_path = thumb.map(|t| if std::path::Path::new(&t).is_absolute() { t } else { format!("{}/{}", base, t) })
-                                    .or_else(|| { if media_type != Some("video") { return None; } resolve_video_thumb_fallback(base, name.as_deref()?, thumb_cache_dir) });
+                                let thumbnail_path = thumb.map(|t| {
+                                    if std::path::Path::new(&t).is_absolute() {
+                                        t
+                                    } else if let Some(ref cache_dir) = thumb_cache_dir_v {
+                                        cache_dir.join(&t).to_string_lossy().to_string()
+                                    } else {
+                                        format!("{}/{}", base, t)
+                                    }
+                                })
+                                .or_else(|| {
+                                    if media_type_v.as_deref() != Some("video") { return None; }
+                                    resolve_video_thumb_fallback(base, name.as_deref()?, thumb_cache_dir_v.as_deref())
+                                });
                                 DuplicateItem { media_id: id, file_path, size: size as u64, thumbnail_path }
                             }).collect(),
                         });
@@ -307,8 +350,53 @@ impl DbOperations {
                     }
                 }
             }
+
+            Ok::<Vec<DuplicateGroup>, anyhow::Error>(groups)
+        });
+
+        // ── Await all tasks concurrently ──
+        let (hash_res, phash_res, vector_res) = tokio::try_join!(
+            async { hash_task.await.map_err(|e| anyhow::anyhow!("Hash task panicked: {}", e))? },
+            async { phash_task.await.map_err(|e| anyhow::anyhow!("pHash task panicked: {}", e))? },
+            async { vector_task.await.map_err(|e| anyhow::anyhow!("Vector task panicked: {}", e))? }
+        )?;
+
+        // ── Merge results sequentially with a `covered` set to eliminate overlaps ──
+        let mut final_groups: Vec<DuplicateGroup> = vec![];
+        let mut covered: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        // 1. Process exact SHA-256 duplicates
+        for group in hash_res {
+            for item in &group.items {
+                covered.insert(item.media_id.clone());
+            }
+            final_groups.push(group);
         }
 
-        Ok(groups)
+        // 2. Process pHash near-duplicates
+        for group in phash_res {
+            let ids: Vec<&str> = group.items.iter().map(|item| item.media_id.as_str()).collect();
+            if ids.iter().all(|id| covered.contains(*id)) {
+                continue;
+            }
+            for id in &ids {
+                covered.insert(id.to_string());
+            }
+            final_groups.push(group);
+        }
+
+        // 3. Process Vector near-duplicates
+        for group in vector_res {
+            let ids: Vec<&str> = group.items.iter().map(|item| item.media_id.as_str()).collect();
+            if ids.iter().all(|id| covered.contains(*id)) {
+                continue;
+            }
+            for id in &ids {
+                covered.insert(id.to_string());
+            }
+            final_groups.push(group);
+        }
+
+        Ok(final_groups)
     }
 }
