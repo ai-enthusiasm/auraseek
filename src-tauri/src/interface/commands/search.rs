@@ -60,7 +60,7 @@ pub async fn cmd_search_combined(text: String, image_path: String, filters: Opti
 
 #[tauri::command]
 pub async fn cmd_search_object(class_name: String, filters: Option<SearchQueryFilters>, state: State<'_, AppState>) -> Result<Vec<SearchResult>, String> {
-    let mut f = filters.unwrap_or_default(); f.object = Some(class_name);
+    let mut f = filters.unwrap_or_default(); f.objects = Some(vec![class_name]);
     let sq = SearchQuery { mode: SearchMode::ObjectFilter, text: None, image_path: None, filters: f };
     run_search(sq, None, None, &state).await
 }

@@ -12,7 +12,7 @@ pub enum SearchMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SearchQueryFilters {
-    pub object:     Option<String>,
+    pub objects:    Option<Vec<String>>,
     pub face:       Option<String>,
     pub month:      Option<u32>,
     pub year:       Option<i32>,
