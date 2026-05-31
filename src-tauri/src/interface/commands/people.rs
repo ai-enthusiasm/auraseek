@@ -6,9 +6,10 @@ use crate::infrastructure::database::DbOperations;
 #[tauri::command]
 pub async fn cmd_get_people(state: State<'_, AppState>) -> Result<Vec<PersonGroup>, String> {
     let source_dir = state.source_dir.lock().await.clone();
+    let cache_dir = state.data_dir.lock().unwrap().join("thumbnails");
     let guard      = state.sqlite.lock().unwrap();
     let db         = guard.as_ref().ok_or("DB not initialized")?;
-    DbOperations::get_people(db, &source_dir).map_err(|e| e.to_string())
+    DbOperations::get_people(db, &source_dir, &cache_dir).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -92,4 +93,14 @@ pub async fn cmd_remove_face_from_person(media_id: String, face_id: String, stat
         ).await;
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn cmd_generate_missing_person_thumbnails(state: State<'_, AppState>) -> Result<usize, String> {
+    let source_dir = state.source_dir.lock().await.clone();
+    let cache_dir = state.data_dir.lock().unwrap().join("thumbnails");
+    let guard = state.sqlite.lock().unwrap();
+    let db = guard.as_ref().ok_or("DB not initialized")?;
+    DbOperations::generate_missing_person_thumbnails(db, &source_dir, &cache_dir)
+        .map_err(|e| e.to_string())
 }
