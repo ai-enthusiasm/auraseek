@@ -93,7 +93,8 @@ pub struct AuraSeekEngine {
     pub face: Option<FaceModel>,
     pub face_db: FaceDb,
     pub session_faces: Vec<(Vec<f32>, String)>,
-    yolo_confidence: f32,
+    yolo_score_high: f32,
+    yolo_score_min: f32,
     yolo_iou: f32,
     /// Minimum confidence to consider a crop as a face.
     pub face_detection_threshold: f32,
@@ -140,7 +141,8 @@ impl AuraSeekEngine {
             face,
             face_db,
             session_faces: Vec::new(),
-            yolo_confidence: app_cfg.yolo_confidence,
+            yolo_score_high: app_cfg.yolo_score_high,
+            yolo_score_min: app_cfg.yolo_score_min,
             yolo_iou: app_cfg.yolo_iou,
             face_detection_threshold: app_cfg.face_detection_threshold,
             face_identity_threshold: app_cfg.face_identity_threshold,
@@ -171,7 +173,8 @@ impl AuraSeekEngine {
         let t_yolo = std::time::Instant::now();
         let lb = letterbox_640_from_image(&img);
         let raw = self.yolo.detect(lb.blob.clone())?;
-        let objects = YoloProcessor::postprocess(&raw, &lb, self.yolo_confidence, self.yolo_iou);
+        let raw_objects = YoloProcessor::postprocess(&raw, &lb, self.yolo_score_min, self.yolo_iou);
+        let objects = YoloProcessor::apply_dual_threshold(raw_objects, self.yolo_score_high, self.yolo_score_min);
         let dur_yolo = t_yolo.elapsed().as_millis();
 
         // 4. Face detection

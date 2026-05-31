@@ -8,12 +8,8 @@ use crate::log_info;
 
 pub struct YoloRawResult {
     pub det: Vec<f32>,
-    pub protos: Vec<f32>,
     pub n_det: usize,
     pub det_dim: usize,
-    pub proto_c: usize,
-    pub proto_h: usize,
-    pub proto_w: usize,
     pub class_names: Vec<String>,
 }
 
@@ -37,7 +33,6 @@ impl YoloRawResult {
                     conf,
                     class_id,
                     class_name,
-                    mask_coeffs: self.det[base + 6..base + self.det_dim].to_vec(),
                 })
             })
             .collect()
@@ -54,7 +49,6 @@ pub struct YoloDet {
     #[allow(dead_code)]
     pub class_id:    usize,
     pub class_name:  String,
-    pub mask_coeffs: Vec<f32>,
 }
 
 pub struct YoloModel {
@@ -83,16 +77,11 @@ impl YoloModel {
         let outputs = self.session.run(ort::inputs!["images" => img_tensor])?;
 
         let (shape0, det_data)   = outputs[0].try_extract_tensor::<f32>()?;
-        let (shape1, proto_data) = outputs[1].try_extract_tensor::<f32>()?;
 
         Ok(YoloRawResult {
             det:         det_data.to_vec() as Vec<f32>,
-            protos:      proto_data.to_vec() as Vec<f32>,
             n_det:       shape0[1] as usize,
             det_dim:     shape0[2] as usize,
-            proto_c:     shape1[1] as usize,
-            proto_h:     shape1[2] as usize,
-            proto_w:     shape1[3] as usize,
             class_names: self.class_names.clone(),
         })
     }
