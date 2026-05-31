@@ -388,36 +388,73 @@ impl QdrantService {
             .context("Failed to list Qdrant collections")?;
 
         let exists = collections.collections.iter().any(|c| c.name == name);
+        let mut needs_creation = !exists;
+
         if exists {
-            crate::log_info!("📋 Qdrant collection '{}' already exists", name);
-            return Ok(());
+            match client.collection_info(name).await {
+                Ok(info) => {
+                    if let Some(res) = info.result {
+                        let status_str = format!("{:?}", res.status);
+                        crate::log_info!("📋 Qdrant collection '{}' already exists, status: {}", name, status_str);
+                        if status_str.contains("Red") {
+                            crate::log_warn!("⚠️ Qdrant collection '{}' status is RED. Recreating.", name);
+                            let _ = client.delete_collection(name).await;
+                            needs_creation = true;
+                        }
+                    } else {
+                        crate::log_warn!("⚠️ Qdrant collection '{}' exists but has no result info. Recreating.", name);
+                        let _ = client.delete_collection(name).await;
+                        needs_creation = true;
+                    }
+                }
+                Err(e) => {
+                    crate::log_warn!("⚠️ Qdrant collection '{}' exists but is unhealthy ({}). Recreating.", name, e);
+                    let _ = client.delete_collection(name).await;
+                    needs_creation = true;
+                }
+            }
         }
 
-        crate::log_info!("📋 Creating Qdrant collection '{}' (dim={}, cosine, SQ int8, on-disk)", name, dim);
+        if needs_creation {
+            crate::log_info!("📋 Creating Qdrant collection '{}' (dim={}, cosine, SQ int8, on-disk)", name, dim);
 
-        let vectors_config = VectorParamsBuilder::new(dim as u64, Distance::Cosine)
-            .on_disk(true);
+            let vectors_config = VectorParamsBuilder::new(dim as u64, Distance::Cosine)
+                .on_disk(true);
 
-        client.create_collection(
-            CreateCollectionBuilder::new(name)
-                .vectors_config(vectors_config)
-                .quantization_config(
-                    ScalarQuantizationBuilder::default()
-                        .r#type(1) // 1 = Int8
-                        .always_ram(true)
-                )
-                .hnsw_config(
-                    HnswConfigDiffBuilder::default()
-                        .m(16)
-                        .ef_construct(100)
-                )
-                .optimizers_config(
-                    OptimizersConfigDiffBuilder::default()
-                        .memmap_threshold(20000)
-                )
-        ).await.context("Failed to create Qdrant collection")?;
+            let res = client.create_collection(
+                CreateCollectionBuilder::new(name)
+                    .vectors_config(vectors_config)
+                    .quantization_config(
+                        ScalarQuantizationBuilder::default()
+                            .r#type(1) // 1 = Int8
+                            .always_ram(true)
+                    )
+                    .hnsw_config(
+                        HnswConfigDiffBuilder::default()
+                            .m(16)
+                            .ef_construct(100)
+                    )
+                    .optimizers_config(
+                        OptimizersConfigDiffBuilder::default()
+                            .memmap_threshold(20000)
+                    )
+            ).await;
 
-        crate::log_info!("✅ Qdrant collection '{}' created", name);
+            match res {
+                Ok(_) => {
+                    crate::log_info!("✅ Qdrant collection '{}' created", name);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("already exists") {
+                        crate::log_info!("📋 Qdrant collection '{}' was created by another task concurrently", name);
+                    } else {
+                        return Err(e).context("Failed to create Qdrant collection");
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 

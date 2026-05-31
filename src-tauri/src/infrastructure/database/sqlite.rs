@@ -57,38 +57,33 @@ impl SqliteDb {
             );
             CREATE INDEX IF NOT EXISTS idx_media_sha256 ON media(file_sha256);
             CREATE INDEX IF NOT EXISTS idx_media_created ON media(meta_created_at);
-            CREATE INDEX IF NOT EXISTS idx_media_name ON media(file_name);
             CREATE INDEX IF NOT EXISTS idx_media_name_sha256 ON media(file_name, file_sha256);
             CREATE INDEX IF NOT EXISTS idx_media_name_size_modified ON media(file_name, file_size, meta_modified_at);
             CREATE INDEX IF NOT EXISTS idx_media_processed ON media(processed);
+            CREATE INDEX IF NOT EXISTS idx_media_processed_check
+                ON media(file_name, file_size, meta_modified_at, processed, id);
+
+            CREATE TABLE IF NOT EXISTS object_class (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL
+            );
 
             CREATE TABLE IF NOT EXISTS media_objects (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-                class_name TEXT NOT NULL,
+                class_id INTEGER NOT NULL REFERENCES object_class(id) ON DELETE CASCADE,
                 conf REAL NOT NULL,
                 bbox_x REAL, bbox_y REAL, bbox_w REAL, bbox_h REAL,
                 thumbnail TEXT,
                 mask_area INTEGER,
                 mask_path TEXT,
-                mask_rle TEXT
+                mask_rle BLOB
             );
             CREATE INDEX IF NOT EXISTS idx_obj_media ON media_objects(media_id);
-            CREATE INDEX IF NOT EXISTS idx_obj_class ON media_objects(class_name);
-
-            CREATE TABLE IF NOT EXISTS media_faces (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-                face_id TEXT NOT NULL,
-                name TEXT,
-                conf REAL NOT NULL,
-                bbox_x REAL, bbox_y REAL, bbox_w REAL, bbox_h REAL
-            );
-            CREATE INDEX IF NOT EXISTS idx_face_media ON media_faces(media_id);
-            CREATE INDEX IF NOT EXISTS idx_face_id ON media_faces(face_id);
+            CREATE INDEX IF NOT EXISTS idx_obj_class ON media_objects(class_id);
 
             CREATE TABLE IF NOT EXISTS person (
-                id TEXT PRIMARY KEY,
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 face_id TEXT UNIQUE NOT NULL,
                 name TEXT,
                 thumbnail TEXT,
@@ -96,6 +91,17 @@ impl SqliteDb {
                 face_bbox_x REAL, face_bbox_y REAL, face_bbox_w REAL, face_bbox_h REAL,
                 created_at TEXT DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS media_faces (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                media_id TEXT NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                person_id INTEGER REFERENCES person(id) ON DELETE CASCADE,
+                name TEXT,
+                conf REAL NOT NULL,
+                bbox_x REAL, bbox_y REAL, bbox_w REAL, bbox_h REAL
+            );
+            CREATE INDEX IF NOT EXISTS idx_face_media ON media_faces(media_id);
+            CREATE INDEX IF NOT EXISTS idx_face_person_id ON media_faces(person_id);
 
             CREATE TABLE IF NOT EXISTS config_auraseek (
                 id TEXT PRIMARY KEY DEFAULT 'main',

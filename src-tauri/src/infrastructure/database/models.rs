@@ -84,7 +84,7 @@ pub struct PersonDoc {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchFilters {
-    pub object:     Option<String>,
+    pub objects:    Option<Vec<String>>,
     pub face:       Option<String>,
     pub month:      Option<u32>,
     pub year:       Option<i32>,

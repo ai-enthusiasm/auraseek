@@ -29,10 +29,34 @@ impl DbOperations {
         }
 
         let point = PointStruct::new(point_id, embedding, payload);
-        client.upsert_points(
-            UpsertPointsBuilder::new(collection, vec![point]).wait(true)
-        ).await.context("insert_embedding: upsert failed")?;
+        let res = client.upsert_points(
+            UpsertPointsBuilder::new(collection, vec![point.clone()]).wait(true)
+        ).await;
 
+        if let Err(ref e) = res {
+            let err_str = e.to_string();
+            if err_str.contains("Service runtime error")
+                || err_str.contains("Not recovered from previous error")
+                || err_str.contains("failed to open file")
+            {
+                crate::log_warn!(
+                    "⚠️ Qdrant collection '{}' seems corrupted or degraded. Recreating collection and retrying write... Error: {}",
+                    collection,
+                    err_str
+                );
+                let _ = client.delete_collection(collection).await;
+                if let Err(recreate_err) = crate::infrastructure::database::QdrantService::ensure_collection(client, collection, 384).await {
+                    crate::log_error!("❌ Failed to recreate collection '{}' during recovery: {}", collection, recreate_err);
+                } else {
+                    client.upsert_points(
+                        UpsertPointsBuilder::new(collection, vec![point]).wait(true)
+                    ).await.context("insert_embedding: retry upsert failed")?;
+                    return Ok(());
+                }
+            }
+        }
+
+        res.context("insert_embedding: upsert failed")?;
         Ok(())
     }
 
@@ -107,10 +131,34 @@ impl DbOperations {
             .map_err(|e| anyhow::anyhow!("failed to create payload: {}", e))?;
 
         let point = PointStruct::new(point_id, embedding, payload);
-        client.upsert_points(
-            UpsertPointsBuilder::new(collection, vec![point]).wait(true)
-        ).await.context("insert_face_embedding: upsert failed")?;
+        let res = client.upsert_points(
+            UpsertPointsBuilder::new(collection, vec![point.clone()]).wait(true)
+        ).await;
 
+        if let Err(ref e) = res {
+            let err_str = e.to_string();
+            if err_str.contains("Service runtime error")
+                || err_str.contains("Not recovered from previous error")
+                || err_str.contains("failed to open file")
+            {
+                crate::log_warn!(
+                    "⚠️ Qdrant face collection '{}' seems corrupted or degraded. Recreating collection and retrying write... Error: {}",
+                    collection,
+                    err_str
+                );
+                let _ = client.delete_collection(collection).await;
+                if let Err(recreate_err) = crate::infrastructure::database::QdrantService::ensure_collection(client, collection, 512).await {
+                    crate::log_error!("❌ Failed to recreate face collection '{}' during recovery: {}", collection, recreate_err);
+                } else {
+                    client.upsert_points(
+                        UpsertPointsBuilder::new(collection, vec![point]).wait(true)
+                    ).await.context("insert_face_embedding: retry upsert failed")?;
+                    return Ok(());
+                }
+            }
+        }
+
+        res.context("insert_face_embedding: upsert failed")?;
         Ok(())
     }
 
