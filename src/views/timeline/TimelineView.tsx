@@ -79,6 +79,66 @@ export function TimelineView({
     }
   }, [usePaginated, loadedPages.size, loadPage]);
 
+  // Background refresh handler for paginated mode
+  const refreshLoadedPages = useCallback(async () => {
+    if (!usePaginated) return;
+    try {
+      const pagesToRefresh = Array.from(loadedPages);
+      if (pagesToRefresh.length === 0) {
+        await loadPage(0);
+        return;
+      }
+
+      setIsPaginatedLoading(true);
+      const promises = pagesToRefresh.map(async (pageIndex) => {
+        const offset = pageIndex * PAGE_SIZE;
+        const resp = await AuraSeekApi.getTimelinePage(offset, PAGE_SIZE);
+        return { pageIndex, offset, resp };
+      });
+
+      const results = await Promise.all(promises);
+      
+      if (results.length > 0) {
+        const latestTotal = Math.max(...results.map(r => r.resp.total));
+        setTotalItems(latestTotal);
+      }
+
+      setPaginatedItems((prev) => {
+        const updated = [...prev];
+        for (const { offset, resp } of results) {
+          const newPhotos = resp.items.map(pageItemToPhoto);
+          for (let i = 0; i < newPhotos.length; i++) {
+            updated[offset + i] = newPhotos[i];
+          }
+        }
+        return updated;
+      });
+    } catch (err) {
+      console.warn("[TimelineView] Background refresh failed:", err);
+    } finally {
+      setIsPaginatedLoading(false);
+    }
+  }, [usePaginated, loadedPages, loadPage]);
+
+  useEffect(() => {
+    const handleRefresh = () => {
+      console.log("[TimelineView] 🔄 Refreshing photos...");
+      refreshLoadedPages();
+    };
+    window.addEventListener("refresh_photos", handleRefresh);
+    return () => {
+      window.removeEventListener("refresh_photos", handleRefresh);
+    };
+  }, [refreshLoadedPages]);
+
+  // For paginated mode — collect all loaded photos for the virtual grid
+  const paginatedFilteredPhotos = useMemo(() => {
+    if (!usePaginated) return [];
+    if (mediaType === "video") return paginatedItems.filter(p => p?.type === "video");
+    if (mediaType === "photo") return paginatedItems.filter(p => p && p.type !== "video");
+    return paginatedItems;
+  }, [usePaginated, paginatedItems, mediaType]);
+
   // Process into sections (traditional mode)
   const sections = useMemo(() => {
     // Prefer structured timeline groups
@@ -146,7 +206,9 @@ export function TimelineView({
 
     // Fallback: group flat photos by month
     const map = new Map<string, { id: string; label: string; photos: Photo[] }>();
-    const filteredPhotos = photos.filter(p => {
+    const targetPhotos = usePaginated ? paginatedFilteredPhotos : photos;
+    const filteredPhotos = targetPhotos.filter(p => {
+      if (!p) return false;
       if (mediaType === "video") {
         return p.type === "video";
       }
@@ -183,19 +245,11 @@ export function TimelineView({
       }
     }
     return Array.from(map.values()).sort((a, b) => a.id < b.id ? 1 : -1);
-  }, [timelineGroups, photos, searchQuery, mediaType]);
-
-  // For paginated mode — collect all loaded photos for the virtual grid
-  const paginatedFilteredPhotos = useMemo(() => {
-    if (!usePaginated) return [];
-    if (mediaType === "video") return paginatedItems.filter(p => p?.type === "video");
-    if (mediaType === "photo") return paginatedItems.filter(p => p && p.type !== "video");
-    return paginatedItems;
-  }, [usePaginated, paginatedItems, mediaType]);
+  }, [timelineGroups, photos, searchQuery, mediaType, usePaginated, paginatedFilteredPhotos]);
 
   // For small collections or grouped timeline, use sections mode
   // For large paginated collections, use virtual grid
-  const useVirtualGrid = usePaginated || sections.reduce((a, s) => a + s.photos.length, 0) > 500;
+  const useVirtualGrid = false; // Disable flat virtual grid to preserve monthly headers as requested
 
   // Flatten sections for virtual grid mode
   const allSectionPhotos = useMemo(() => {
@@ -260,7 +314,7 @@ export function TimelineView({
       <div
         ref={scrollContainerRef}
         id="timeline-scroll-container"
-        className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 relative bg-white"
+        className="flex-1 overflow-y-auto px-4 pb-6 pt-3 sm:px-6 lg:px-8 relative bg-background"
       >
         {/* Loading skeleton */}
         {isLoading && (

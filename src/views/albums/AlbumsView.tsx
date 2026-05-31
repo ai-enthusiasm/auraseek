@@ -151,7 +151,7 @@ export function AlbumsView({ photos = [], onNavigate }: { photos?: Photo[], onNa
     const isInAnyMode = selectionMode || deleteMode;
 
     return (
-        <div className="flex-1 overflow-y-auto px-6 py-8 will-change-scroll">
+        <div className="w-full h-full overflow-y-auto px-6 py-8 will-change-scroll">
             <div className="max-w-7xl mx-auto space-y-12">
 
                 {/* Header */}

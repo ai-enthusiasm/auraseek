@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect } from "react";
 import type { Photo } from "@/types/photo.type";
-import { PhotoGrid } from "@/components/photos/PhotoGrid";
+import { VirtualPhotoGrid } from "@/components/photos/VirtualPhotoGrid";
 import { FullScreenViewer } from "@/components/photo-detail/FullScreenViewer";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, Loader2 } from "lucide-react";
@@ -26,12 +26,16 @@ function timelineGroupsToPhotos(groups: any[]): Photo[] {
                 url: path ? localFileUrl(path) : "",
                 thumbnailUrl: thumb ? localFileUrl(thumb) : (path ? localFileUrl(path) : ""),
                 filePath: path,
+                width: item.width || 0,
+                height: item.height || 0,
                 type: (item.media_type === "video" ? "video" : "photo") as "video" | "photo",
                 favorite: item.favorite || false,
                 metadata: item.metadata,
                 faceIds: item.detected_faces?.map((f: any) => f.face_id) || [],
                 faces: item.detected_faces?.map((f: any) => f.face_id) || [],
                 labels: item.detected_objects?.map((o: any) => o.class_name) || [],
+                detectedFaces: item.detected_faces,
+                detectedObjects: item.detected_objects,
             } as any as Photo);
         }
     }
@@ -42,6 +46,13 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
     const [selectedPhoto, setSelectedPhoto] = useState<Photo | null>(null);
     const [albumPhotos, setAlbumPhotos] = useState<Photo[] | null>(null);
     const [isLoadingAlbum, setIsLoadingAlbum] = useState(false);
+
+    const activeClassName = useMemo(() => {
+        if (filterType === "album" && filterPayload?.startsWith("tag_")) {
+            return filterPayload.replace("tag_", "");
+        }
+        return undefined;
+    }, [filterType, filterPayload]);
 
     // For manual/AI albums with a real DB id (e.g. custom_album:xxx), fetch from backend
     const isRealAlbum = filterType === "album" &&
@@ -141,7 +152,7 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
             </div>
 
             {/* Gallery Content */}
-            <div className="flex-1 overflow-y-auto px-4 py-6 will-change-scroll relative">
+            <div className="flex-1 overflow-hidden px-4 py-6 relative flex flex-col">
                 {isLoadingAlbum ? (
                     <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
                         <Loader2 className="w-8 h-8 animate-spin opacity-50" />
@@ -152,14 +163,18 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
                         <div className="text-lg">Album này chưa có ảnh nào</div>
                     </div>
                 ) : (
-                    <div className="mb-8">
-                        <div className="text-sm font-medium mb-4 text-muted-foreground">{filteredPhotos.length} mục</div>
-                        <PhotoGrid
-                            photos={filteredPhotos}
-                            onPhotoClick={setSelectedPhoto}
-                            showBbox={false}
-                        />
-                    </div>
+                    <>
+                        <div className="text-sm font-medium mb-4 text-muted-foreground shrink-0">{filteredPhotos.length} mục</div>
+                        <div className="flex-1 min-h-0 relative">
+                            <VirtualPhotoGrid
+                                photos={filteredPhotos}
+                                onPhotoClick={setSelectedPhoto}
+                                showBbox={filterType === "person" || !!activeClassName}
+                                activeFaceId={filterType === "person" ? filterPayload : undefined}
+                                activeClassName={activeClassName}
+                            />
+                        </div>
+                    </>
                 )}
             </div>
 
@@ -169,6 +184,8 @@ export function FilteredGalleryView({ title, subtitle, filterType, filterPayload
                     onClose={() => setSelectedPhoto(null)}
                     onNext={currentPhotoIndex < filteredPhotos.length - 1 ? handleNextPhoto : undefined}
                     onPrev={currentPhotoIndex > 0 ? handlePrevPhoto : undefined}
+                    activeFaceId={filterType === "person" ? filterPayload : undefined}
+                    activeClassName={activeClassName}
                 />
             )}
         </div>
