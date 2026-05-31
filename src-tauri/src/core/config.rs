@@ -6,7 +6,7 @@ static GLOBAL_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
 pub const MODEL_VISION_REL: &str = "models/vision_aura.onnx";
 pub const MODEL_TEXT_REL: &str = "models/text_aura.onnx";
-pub const MODEL_YOLO_REL: &str = "models/yolo26s-seg.onnx";
+pub const MODEL_YOLO_REL: &str = "models/yolo26s.onnx";
 pub const MODEL_SCRFD_REL: &str = "models/scrfd_2.5g_bnkps.onnx";
 pub const MODEL_ARCFACE_REL: &str = "models/arcface_resnet50.onnx";
 pub const TOKENIZER_VOCAB_REL: &str = "tokenizer/vocab.txt";
@@ -15,7 +15,7 @@ pub const FONT_DEJAVU_REL: &str = "fonts/DejaVuSans.ttf";
 
 pub const MODEL_VISION_NAME: &str = "vision_aura.onnx";
 pub const MODEL_TEXT_NAME: &str = "text_aura.onnx";
-pub const MODEL_YOLO_NAME: &str = "yolo26s-seg.onnx";
+pub const MODEL_YOLO_NAME: &str = "yolo26s.onnx";
 pub const MODEL_SCRFD_NAME: &str = "scrfd_2.5g_bnkps.onnx";
 pub const MODEL_ARCFACE_NAME: &str = "arcface_resnet50.onnx";
 pub const TOKENIZER_VOCAB_NAME: &str = "vocab.txt";
@@ -98,7 +98,8 @@ pub struct AppConfig {
     pub face_nms_iou_threshold: f32,
     /// Max face candidates kept (by score) before NMS; must be ≥ 1.
     pub face_top_k: usize,
-    pub yolo_confidence: f32,
+    pub yolo_score_high: f32,
+    pub yolo_score_min: f32,
     pub yolo_iou: f32,
     pub search_threshold: f32,
     pub search_limit: usize,
@@ -127,7 +128,6 @@ pub struct AppConfig {
     pub device: DevicePreference,
     pub num_threads: usize,
 
-    pub enable_mask_rle: bool,
     pub debug: bool,
 }
 
@@ -151,7 +151,8 @@ impl Default for AppConfig {
             face_identity_threshold: 0.6,
             face_nms_iou_threshold: 0.45,
             face_top_k: 5000,
-            yolo_confidence: 0.65,
+            yolo_score_high: 0.55,
+            yolo_score_min: 0.40,
             yolo_iou: 0.9,
             search_threshold: 0.51,
             search_limit: 10000,
@@ -174,7 +175,6 @@ impl Default for AppConfig {
             device: DevicePreference::Auto,
             num_threads: 0, // 0 = auto-detect at runtime via compute_safe_threads()
 
-            enable_mask_rle: false,
             debug: false,
         }
     }
@@ -311,9 +311,13 @@ impl AppConfig {
             0.0, 1.0, "AURASEEK_FACE_NMS_IOU_THRESHOLD",
         );
         let face_top_k = env_or("AURASEEK_FACE_TOP_K", defaults.face_top_k).max(1);
-        let yolo_confidence = clamp_f32(
-            env_or("AURASEEK_YOLO_CONFIDENCE", defaults.yolo_confidence),
-            0.0, 1.0, "AURASEEK_YOLO_CONFIDENCE",
+        let yolo_score_high = clamp_f32(
+            env_or("AURASEEK_YOLO_SCORE_HIGH", defaults.yolo_score_high),
+            0.0, 1.0, "AURASEEK_YOLO_SCORE_HIGH",
+        );
+        let yolo_score_min = clamp_f32(
+            env_or("AURASEEK_YOLO_SCORE_MIN", defaults.yolo_score_min),
+            0.0, 1.0, "AURASEEK_YOLO_SCORE_MIN",
         );
         let yolo_iou = clamp_f32(
             env_or("AURASEEK_YOLO_IOU", defaults.yolo_iou),
@@ -395,7 +399,6 @@ impl AppConfig {
             "AURASEEK_FS_WATCHER_MIN_RAM_PERCENT",
         );
 
-        let enable_mask_rle = env_or("AURASEEK_ENABLE_MASK_RLE", defaults.enable_mask_rle);
         let debug = env_or("AURASEEK_DEBUG", defaults.debug);
 
         Self {
@@ -412,7 +415,8 @@ impl AppConfig {
             face_identity_threshold,
             face_nms_iou_threshold,
             face_top_k,
-            yolo_confidence,
+            yolo_score_high,
+            yolo_score_min,
             yolo_iou,
             search_threshold,
             search_limit,
@@ -428,7 +432,6 @@ impl AppConfig {
             fs_watcher_min_ram_percent,
             device,
             num_threads,
-            enable_mask_rle,
             debug,
         }
     }
@@ -460,7 +463,7 @@ impl AppConfig {
             self.face_top_k
         );
         crate::log_info!("   Search:        {:.4} (limit: {})", self.search_threshold, self.search_limit);
-        crate::log_info!("   YOLO (Conf/IOU): {:.4} / {:.4}", self.yolo_confidence, self.yolo_iou);
+        crate::log_info!("   YOLO (ScoreHigh/ScoreMin/IOU): {:.4} / {:.4} / {:.4}", self.yolo_score_high, self.yolo_score_min, self.yolo_iou);
         crate::log_info!("   Max Batch:     {}", self.max_batch_size);
         crate::log_info!(
             "   Video scene: {:.4} | near-dup similarity {:.4} (video dedup + Qdrant) | scroll {}",
