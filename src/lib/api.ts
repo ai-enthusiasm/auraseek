@@ -119,7 +119,7 @@ export interface IngestSummary {
 }
 
 export interface SearchFilters {
-    object?: string;
+    objects?: string[];
     face?: string;
     month?: number;
     year?: number;
@@ -211,6 +211,10 @@ export const AuraSeekApi = {
 
     async generateMissingThumbnails(): Promise<number> {
         return invoke<number>("cmd_generate_missing_thumbnails");
+    },
+
+    async generateMissingPersonThumbnails(): Promise<number> {
+        return invoke<number>("cmd_generate_missing_person_thumbnails");
     },
 
     async getPeople(): Promise<PersonGroup[]> {

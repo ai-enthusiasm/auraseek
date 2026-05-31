@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Filter, Calendar, Users, FileType, Tag, X, Loader2, SearchX } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { ActiveFilters } from "@/App";
-import { AuraSeekApi, type PersonGroup, localFileUrl, streamFileUrl } from "@/lib/api";
+import { AuraSeekApi, type PersonGroup, localFileUrl } from "@/lib/api";
 
 const MONTHS = [
     { label: "Tháng 1", value: 1 }, { label: "Tháng 2", value: 2 },
@@ -41,12 +41,7 @@ function MiniFaceCropAvatar({
 
         let cancelled = false;
         const resolveUrl = async () => {
-            let url = "";
-            if (rawPath.startsWith("/") || rawPath.match(/^[A-Za-z]:\\/)) {
-                url = await streamFileUrl(rawPath);
-            } else {
-                url = localFileUrl(rawPath);
-            }
+            const url = localFileUrl(rawPath);
             if (cancelled) return;
 
             const img = new Image();
@@ -256,14 +251,22 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                             Đối tượng (từ dữ liệu đã quét)
                         </div>
 
-                        {localFilters.object && (
-                            <div className="flex items-center gap-2">
-                                <span className="bg-primary/10 text-primary text-xs px-2.5 py-1 rounded-full border border-primary/20">
-                                    {localFilters.object}
-                                </span>
-                                <button onClick={() => update({ object: undefined })} className="text-muted-foreground hover:text-foreground">
-                                    <X className="w-3.5 h-3.5" />
-                                </button>
+                        {localFilters.objects && localFilters.objects.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                                {localFilters.objects.map(obj => (
+                                    <div key={obj} className="flex items-center gap-1.5 bg-primary/10 text-primary text-xs px-2.5 py-1 rounded-full border border-primary/20">
+                                        <span>{obj}</span>
+                                        <button 
+                                            onClick={() => {
+                                                const next = localFilters.objects?.filter(o => o !== obj) || [];
+                                                update({ objects: next.length > 0 ? next : undefined });
+                                            }} 
+                                            className="text-muted-foreground hover:text-foreground p-0.5 rounded-full hover:bg-primary/20"
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    </div>
+                                ))}
                             </div>
                         )}
 
@@ -291,18 +294,28 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                     {filteredObjects.length === 0 ? (
                                         <span className="text-xs text-muted-foreground py-1">Không tìm thấy đối tượng phù hợp</span>
                                     ) : (
-                                        filteredObjects.map(obj => (
-                                            <button
-                                                key={obj}
-                                                onClick={() => update({ object: localFilters.object === obj ? undefined : obj })}
-                                                className={`text-xs px-2 py-1 rounded-md border transition-all ${localFilters.object === obj
-                                                        ? "bg-primary/10 border-primary/30 text-primary font-medium"
-                                                        : "border-border/40 hover:bg-muted"
+                                        filteredObjects.map(obj => {
+                                            const isActive = localFilters.objects?.includes(obj) || false;
+                                            return (
+                                                <button
+                                                    key={obj}
+                                                    onClick={() => {
+                                                        const current = localFilters.objects || [];
+                                                        const next = current.includes(obj)
+                                                            ? current.filter(o => o !== obj)
+                                                            : [...current, obj];
+                                                        update({ objects: next.length > 0 ? next : undefined });
+                                                    }}
+                                                    className={`text-xs px-2 py-1 rounded-md border transition-all ${
+                                                        isActive
+                                                            ? "bg-primary/10 border-primary/30 text-primary font-medium"
+                                                            : "border-border/40 hover:bg-muted"
                                                     }`}
-                                            >
-                                                {obj}
-                                            </button>
-                                        ))
+                                                >
+                                                    {obj}
+                                                </button>
+                                            );
+                                        })
                                     )}
                                 </div>
                             </>
