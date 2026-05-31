@@ -32,7 +32,6 @@ pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> Sea
         detected_objects: row.objects.iter().map(|o| DetectedObject {
             class_name: o.class_name.clone(), conf: o.conf,
             bbox: BboxInfo { x: o.bbox.x, y: o.bbox.y, w: o.bbox.w, h: o.bbox.h },
-            mask_rle: o.mask_rle.clone(),
         }).collect(),
         detected_faces: row.faces.iter().map(|f| DetectedFace {
             face_id: f.face_id.clone(), name: f.name.clone(), conf: f.conf,
@@ -51,29 +50,16 @@ pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> Sea
 /// Read objects from media_objects table for a given media_id.
 fn read_objects(conn: &Connection, media_id: &str) -> Result<Vec<ObjectEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT oc.name, mo.conf, mo.bbox_x, mo.bbox_y, mo.bbox_w, mo.bbox_h, mo.mask_area, mo.mask_path, mo.mask_rle
+        "SELECT oc.name, mo.conf, mo.bbox_x, mo.bbox_y, mo.bbox_w, mo.bbox_h
          FROM media_objects mo
          JOIN object_class oc ON mo.class_id = oc.id
          WHERE mo.media_id = ?1"
-    )?;
+     )?;
     let rows = stmt.query_map(params![media_id], |r| {
-        let mask_rle_bytes: Option<Vec<u8>> = r.get(8)?;
-        let mask_rle = mask_rle_bytes.map(|bytes| {
-            let mut pairs = Vec::with_capacity(bytes.len() / 8);
-            for chunk in bytes.chunks_exact(8) {
-                let off = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
-                let len = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
-                pairs.push([off, len]);
-            }
-            pairs
-        });
         Ok(ObjectEntry {
             class_name: r.get(0)?,
             conf:       r.get(1)?,
             bbox: Bbox { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? },
-            mask_area:  r.get(6)?,
-            mask_path:  r.get(7)?,
-            mask_rle,
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -195,7 +181,7 @@ pub fn read_media_rows_from_query(conn: &Connection, sql: &str, params: &[&dyn r
         let placeholders = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
 
         let query_sql = format!(
-            "SELECT mo.media_id, oc.name, mo.conf, mo.bbox_x, mo.bbox_y, mo.bbox_w, mo.bbox_h, mo.mask_area, mo.mask_path, mo.mask_rle 
+            "SELECT mo.media_id, oc.name, mo.conf, mo.bbox_x, mo.bbox_y, mo.bbox_w, mo.bbox_h 
              FROM media_objects mo
              JOIN object_class oc ON mo.class_id = oc.id
              WHERE mo.media_id IN ({})",
@@ -205,16 +191,6 @@ pub fn read_media_rows_from_query(conn: &Connection, sql: &str, params: &[&dyn r
         let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
         let rows = stmt_objs.query_map(&*params_vec, |r| {
             let media_id: String = r.get(0)?;
-            let mask_rle_bytes: Option<Vec<u8>> = r.get(9)?;
-            let mask_rle = mask_rle_bytes.map(|bytes| {
-                let mut pairs = Vec::with_capacity(bytes.len() / 8);
-                for chunk in bytes.chunks_exact(8) {
-                    let off = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
-                    let len = u32::from_le_bytes(chunk[4..8].try_into().unwrap());
-                    pairs.push([off, len]);
-                }
-                pairs
-            });
             Ok((
                 media_id,
                 ObjectEntry {
@@ -226,9 +202,6 @@ pub fn read_media_rows_from_query(conn: &Connection, sql: &str, params: &[&dyn r
                         w: r.get(5)?,
                         h: r.get(6)?,
                     },
-                    mask_area: r.get(7)?,
-                    mask_path: r.get(8)?,
-                    mask_rle,
                 }
             ))
         })?;
@@ -307,7 +280,6 @@ impl DbOperations {
                 detected_objects: row.objects.iter().map(|o| DetectedObject {
                     class_name: o.class_name.clone(), conf: o.conf,
                     bbox: BboxInfo { x: o.bbox.x, y: o.bbox.y, w: o.bbox.w, h: o.bbox.h },
-                    mask_rle: o.mask_rle.clone(),
                 }).collect(),
                 detected_faces: row.faces.iter().map(|f| DetectedFace {
                     face_id: f.face_id.clone(), name: f.name.clone(), conf: f.conf,

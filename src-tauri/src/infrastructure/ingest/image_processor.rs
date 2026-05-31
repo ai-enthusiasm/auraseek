@@ -324,9 +324,6 @@ pub fn convert_objects(output: &EngineOutput) -> Vec<ObjectEntry> {
             w: o.bbox[2] - o.bbox[0],
             h: o.bbox[3] - o.bbox[1],
         },
-        mask_area: Some(o.mask_area),
-        mask_path: None,
-        mask_rle: Some(o.mask_rle.iter().map(|&(a, b)| [a, b]).collect()),
     }).collect()
 }
 

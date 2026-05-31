@@ -181,15 +181,10 @@ pub async fn process_video(
                 class_name,
                 conf:       0.0,
                 bbox:       Bbox { x: o.bbox[0], y: o.bbox[1], w: o.bbox[2]-o.bbox[0], h: o.bbox[3]-o.bbox[1] },
-                mask_area:  Some(o.mask_area),
-                mask_path:  None,
-                mask_rle:   Some(o.mask_rle.iter().map(|&(a,b)| [a,b]).collect()),
             });
             if o.conf > entry.conf {
                 entry.conf      = o.conf;
                 entry.bbox      = Bbox { x: o.bbox[0], y: o.bbox[1], w: o.bbox[2]-o.bbox[0], h: o.bbox[3]-o.bbox[1] };
-                entry.mask_rle  = Some(o.mask_rle.iter().map(|&(a,b)| [a,b]).collect());
-                entry.mask_area = Some(o.mask_area);
             }
         }
 

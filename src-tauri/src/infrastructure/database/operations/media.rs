@@ -149,26 +149,12 @@ impl DbOperations {
                 Err(e) => return Err(e.into()),
             };
 
-            let mask_blob: Option<Vec<u8>> = if crate::core::config::AppConfig::global().enable_mask_rle {
-                obj.mask_rle.as_ref().map(|pairs| {
-                    let mut bytes = Vec::with_capacity(pairs.len() * 8);
-                    for pair in pairs {
-                        bytes.extend_from_slice(&pair[0].to_le_bytes());
-                        bytes.extend_from_slice(&pair[1].to_le_bytes());
-                    }
-                    bytes
-                })
-            } else {
-                None
-            };
-
             tx.execute(
-                "INSERT INTO media_objects (media_id, class_id, conf, bbox_x, bbox_y, bbox_w, bbox_h, mask_area, mask_path, mask_rle)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                "INSERT INTO media_objects (media_id, class_id, conf, bbox_x, bbox_y, bbox_w, bbox_h)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![
                     media_id, class_id, obj.conf,
                     obj.bbox.x, obj.bbox.y, obj.bbox.w, obj.bbox.h,
-                    obj.mask_area, obj.mask_path, mask_blob,
                 ],
             )?;
         }
