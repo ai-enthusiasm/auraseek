@@ -41,6 +41,12 @@ export interface SegmentOverlayProps {
   activeObjectIndex?: number | null;
   /** If true, chỉ vẽ mask cho activeObjectIndex (khi chưa có index thì không vẽ gì) */
   onlyActive?: boolean;
+  /** If set, highlight this face ID permanently */
+  activeFaceId?: string;
+  /** If true, draw all faces. If false and activeFaceId is set, only draw the active face. */
+  showAllFaces?: boolean;
+  /** If set, highlight this object class name permanently */
+  activeClassName?: string;
 }
 
 // Decode [offset, length][] RLE into a Uint8Array of 0/1 flags
@@ -79,6 +85,9 @@ export function SegmentOverlay({
   showBoxes  = true,
   activeObjectIndex = null,
   onlyActive = false,
+  activeFaceId,
+  showAllFaces = true,
+  activeClassName,
 }: SegmentOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -123,10 +132,14 @@ export function SegmentOverlay({
       pixels: obj.mask_rle?.length ? decodeRle(obj.mask_rle, totalPixels) : null,
     }));
 
+    const filteredMasks = activeClassName
+      ? masks.filter(m => m.obj.class_name.toLowerCase() === activeClassName.toLowerCase())
+      : masks;
+
     const hasActive = typeof activeObjectIndex === "number";
     const masksToRender = onlyActive
-      ? (hasActive ? masks.filter(m => m.index === activeObjectIndex) : [])
-      : (hasActive ? masks.filter(m => m.index === activeObjectIndex) : masks);
+      ? (hasActive ? filteredMasks.filter(m => m.index === activeObjectIndex) : [])
+      : (hasActive ? filteredMasks.filter(m => m.index === activeObjectIndex) : filteredMasks);
 
     // ── 2. Fill pixels (single ImageData pass over the display canvas) ─
     if (showMasks && masksToRender.some(m => m.pixels)) {
@@ -185,7 +198,11 @@ export function SegmentOverlay({
 
     // ── 3b. Object bbox rectangles (for all objects) ──────────────────
     if (showBoxes) {
-      masks.forEach(({ obj, rgb }) => {
+      const boxesToRender = activeClassName
+        ? masks.filter(m => m.obj.class_name.toLowerCase() === activeClassName.toLowerCase())
+        : (activeFaceId ? [] : masks);
+
+      boxesToRender.forEach(({ obj, rgb }) => {
         const x = obj.bbox.x * scaleX - cropX;
         const y = obj.bbox.y * scaleY - cropY;
         const w = obj.bbox.w * scaleX;
@@ -198,8 +215,13 @@ export function SegmentOverlay({
     }
 
     // ── 4. Face bbox fills (violet) ───────────────────────────────────
-    if (showFaces && showBoxes) {
+    if (showFaces && showBoxes && !activeClassName) {
       for (const face of detectedFaces) {
+        const isActive = activeFaceId === face.face_id;
+        if (activeFaceId && !isActive && !showAllFaces) {
+          continue;
+        }
+
         const x = face.bbox.x * scaleX - cropX;
         const y = face.bbox.y * scaleY - cropY;
         const w = face.bbox.w * scaleX;
@@ -229,7 +251,9 @@ export function SegmentOverlay({
         ctx.fillText(text, lx + pad, ly + lh - 4 / viewScale);
       };
 
-      const labelMasks = activeObjectIndex != null ? masksToRender : masks;
+      const labelMasks = activeClassName
+        ? masks.filter(m => m.obj.class_name.toLowerCase() === activeClassName.toLowerCase())
+        : (activeFaceId ? [] : (activeObjectIndex != null ? masksToRender : masks));
 
       labelMasks.forEach(({ obj, rgb, pixels }) => {
         if (showMasks && !pixels) return;
@@ -241,8 +265,12 @@ export function SegmentOverlay({
         );
       });
 
-      if (showFaces) {
+      if (showFaces && !activeClassName) {
         detectedFaces.forEach(face => {
+          const isActive = activeFaceId === face.face_id;
+          if (activeFaceId && !isActive && !showAllFaces) {
+            return;
+          }
           label(
             face.name ?? "Face",
             face.bbox.x * scaleX - cropX,
@@ -267,6 +295,9 @@ export function SegmentOverlay({
     showBoxes,
     viewScale,
     activeObjectIndex,
+    activeFaceId,
+    showAllFaces,
+    activeClassName,
   ]);
 
   return (

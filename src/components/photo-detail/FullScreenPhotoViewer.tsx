@@ -15,6 +15,8 @@ export function FullScreenPhotoViewer({
     onPrev,
     isTrashMode = false,
     isHiddenMode = false,
+    activeFaceId,
+    activeClassName,
 }: {
     photo: Photo;
     onClose: () => void;
@@ -22,6 +24,8 @@ export function FullScreenPhotoViewer({
     onPrev?: () => void;
     isTrashMode?: boolean;
     isHiddenMode?: boolean;
+    activeFaceId?: string;
+    activeClassName?: string;
 }) {
     const [showInfo, setShowInfo] = useState(true);
     const [showBbox, setShowBbox] = useState(() => {
@@ -445,23 +449,31 @@ export function FullScreenPhotoViewer({
                                         });
                                     }}
                                 />
-                                {(showBbox || activeObjectIndex != null) && hasOverlays && renderedW > 0 && (
-                                    <SegmentOverlay
-                                        detectedObjects={photo.detectedObjects}
-                                        detectedFaces={photo.detectedFaces}
-                                        imgNaturalW={imgRef.current?.naturalWidth || photo.width || 0}
-                                        imgNaturalH={imgRef.current?.naturalHeight || photo.height || 0}
-                                        displayW={renderedW}
-                                        displayH={renderedH}
-                                        objectFit="contain"
-                                        showFaces={showBbox}
-                                        showLabels={false}
-                                        showMasks={false}
-                                        showBoxes={showBbox}
-                                        viewScale={scale}
-                                        activeObjectIndex={activeObjectIndex}
-                                    />
-                                )}
+                                {(() => {
+                                    const hasActiveFace = activeFaceId && photo.detectedFaces?.some(f => f.face_id === activeFaceId);
+                                    const hasActiveClassName = activeClassName && photo.detectedObjects?.some(o => o.class_name.toLowerCase() === activeClassName.toLowerCase());
+                                    const shouldShowOverlay = showBbox || activeObjectIndex != null || hasActiveFace || hasActiveClassName;
+                                    return shouldShowOverlay && hasOverlays && renderedW > 0 && (
+                                        <SegmentOverlay
+                                            detectedObjects={activeFaceId ? undefined : photo.detectedObjects}
+                                            detectedFaces={photo.detectedFaces}
+                                            imgNaturalW={imgRef.current?.naturalWidth || photo.width || 0}
+                                            imgNaturalH={imgRef.current?.naturalHeight || photo.height || 0}
+                                            displayW={renderedW}
+                                            displayH={renderedH}
+                                            objectFit="contain"
+                                            showFaces={showBbox || !!hasActiveFace}
+                                            showLabels={false}
+                                            showMasks={false}
+                                            showBoxes={showBbox || !!hasActiveFace || !!hasActiveClassName}
+                                            viewScale={scale}
+                                            activeObjectIndex={activeObjectIndex}
+                                            activeFaceId={activeFaceId}
+                                            showAllFaces={showBbox}
+                                            activeClassName={activeClassName}
+                                        />
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>

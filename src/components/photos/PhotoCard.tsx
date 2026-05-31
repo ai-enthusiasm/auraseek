@@ -14,6 +14,8 @@ type PhotoCardProps = {
   overlayShowFaces?: boolean;
   overlayShowLabels?: boolean;
   className?: string;
+  activeFaceId?: string;
+  activeClassName?: string;
 };
 
 export function PhotoCard({
@@ -24,7 +26,27 @@ export function PhotoCard({
   overlayShowFaces  = true,
   overlayShowLabels = true,
   className,
+  activeFaceId,
+  activeClassName,
 }: PhotoCardProps) {
+  const [isInViewport, setIsInViewport] = useState(false);
+  const cardRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsInViewport(entry.isIntersecting);
+      },
+      {
+        rootMargin: "400px",
+      }
+    );
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   const { selectedIds, toggleSelection } = useSelection();
   const isSelected   = selectedIds.has(photo.id);
@@ -41,16 +63,55 @@ export function PhotoCard({
   const [displayW, setDisplayW] = useState(0);
   const [displayH, setDisplayH] = useState(0);
 
+  // origSize holds the TRUE original pixel dimensions of the image.
+  // We need this (not the thumbnail's naturalWidth) because bbox coords in DB
+  // are stored in original-image pixel space.
+  // Priority: DB metadata (photo.width/height) > load full-res URL into hidden Image.
+  const [origSize, setOrigSize] = useState<{w: number; h: number} | null>(
+    (photo.width && photo.width > 0) ? { w: photo.width, h: photo.height || photo.width } : null
+  );
+
+  const imgNaturalW = origSize?.w ?? 0;
+  const imgNaturalH = origSize?.h ?? 0;
+
+  const hasActiveFace = !!(activeFaceId && photo.detectedFaces?.some(f => f.face_id === activeFaceId));
+  const hasActiveClassName = !!(activeClassName && photo.detectedObjects?.some(o => o.class_name.toLowerCase() === activeClassName.toLowerCase()));
+  // Show overlay: always for the active face card (to draw bbox), active class card, or on hover when showBbox enabled
+  const shouldRenderOverlay = hasActiveFace || hasActiveClassName || (showBbox && hovered);
+  // In person view (activeFaceId set) or category view (activeClassName set): NEVER expand to show-all, even on hover.
+  // This prevents object bboxes / other-face bboxes from appearing.
+  const showAllFaces = (activeFaceId || activeClassName) ? false : (!hasActiveFace && !hasActiveClassName || hovered);
+
+  // When we don't have DB dimensions (old images), load the full-res URL in a hidden
+  // Image element to get true original dimensions. Only runs once per photo.
   useEffect(() => {
+    if (!isInViewport) return;
+    if (origSize) return; // already have dimensions
+    if (!photo.url) return;
+    const img = new Image();
+    img.onload = () => {
+      setOrigSize({ w: img.naturalWidth, h: img.naturalHeight });
+    };
+    img.src = photo.url;
+    return () => { img.onload = null; };
+  }, [photo.url, origSize, isInViewport]);
+
+  useEffect(() => {
+    if (!isInViewport) return;
+    // Only attach ResizeObserver when the overlay will actually be visible
+    if (!shouldRenderOverlay) return;
     const el = imgRef.current;
     if (!el) return;
+    // Read dimensions immediately so the overlay renders without waiting for a resize event
+    setDisplayW(el.clientWidth);
+    setDisplayH(el.clientHeight);
     const ro = new ResizeObserver(() => {
       setDisplayW(el.clientWidth);
       setDisplayH(el.clientHeight);
     });
     ro.observe(el);
     return () => ro.disconnect();
-  }, []);
+  }, [shouldRenderOverlay, isInViewport]);
 
   const handleSelect = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -77,12 +138,22 @@ export function PhotoCard({
       (photo.detectedFaces   && photo.detectedFaces.length   > 0)
     );
 
-  // Prefer browser-decoded dimensions; metadata may be EXIF-rotated on some files.
-  const imgNaturalW = imgRef.current?.naturalWidth || photo.width || 0;
-  const imgNaturalH = imgRef.current?.naturalHeight || photo.height || 0;
+  if (!isInViewport) {
+    return (
+      <button
+        ref={cardRef}
+        type="button"
+        className={cn(
+          "bg-zinc-100 dark:bg-zinc-900/60 rounded-2xl border border-zinc-200/50 dark:border-zinc-800/50 animate-pulse",
+          className || "w-full h-full aspect-[4/3]"
+        )}
+      />
+    );
+  }
 
   return (
     <button
+      ref={cardRef}
       type="button"
       onClick={selectionMode ? handleSelect : onClick}
       onMouseEnter={() => setHovered(true)}
@@ -101,6 +172,8 @@ export function PhotoCard({
             ref={imgRef}
             src={photo.thumbnailUrl || photo.url}
             alt="Video"
+            loading="lazy"
+            decoding="async"
             className={cn(
               "h-full w-full select-none object-cover transition-transform duration-700 ease-out",
               !(isSelected && selectionMode) && "group-hover:scale-110",
@@ -115,6 +188,8 @@ export function PhotoCard({
             ref={imgRef}
             src={photo.thumbnailUrl || photo.url}
             alt="Photo"
+            loading="lazy"
+            decoding="async"
             className={cn(
               "h-full w-full select-none object-cover transition-transform duration-700 ease-out",
               !(isSelected && selectionMode) && "group-hover:scale-110",
@@ -125,20 +200,27 @@ export function PhotoCard({
         )}
 
         {/* ── Segmentation overlay (images only) ───────────────── */}
-        {showBbox && hovered && hasOverlays && displayW > 0 && imgNaturalW > 0 && (
-          <div className="absolute inset-0 pointer-events-none z-5">
+        {shouldRenderOverlay && hasOverlays && displayW > 0 && imgNaturalW > 0 && (
+          <div className={cn(
+            "absolute inset-0 pointer-events-none z-10",
+            "transition-transform duration-700 ease-out",
+            !(isSelected && selectionMode) && "group-hover:scale-110"
+          )}>
             <SegmentOverlay
-              detectedObjects={photo.detectedObjects}
+              detectedObjects={activeFaceId ? undefined : photo.detectedObjects}
               detectedFaces={photo.detectedFaces}
               imgNaturalW={imgNaturalW}
               imgNaturalH={imgNaturalH}
               displayW={displayW}
               displayH={displayH}
               objectFit="cover"
-              showFaces={overlayShowFaces}
-              showLabels={overlayShowLabels}
+              showFaces={overlayShowFaces || hasActiveFace}
+              showLabels={overlayShowLabels && showAllFaces}
               showMasks={false}
               showBoxes
+              activeFaceId={activeFaceId}
+              showAllFaces={showAllFaces}
+              activeClassName={activeClassName}
             />
           </div>
         )}

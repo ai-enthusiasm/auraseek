@@ -13,6 +13,8 @@ export function FullScreenViewer({
     onPrev,
     isTrashMode = false,
     isHiddenMode = false,
+    activeFaceId,
+    activeClassName,
 }: {
     photo: Photo;
     onClose: () => void;
@@ -20,6 +22,8 @@ export function FullScreenViewer({
     onPrev?: () => void;
     isTrashMode?: boolean;
     isHiddenMode?: boolean;
+    activeFaceId?: string;
+    activeClassName?: string;
 }) {
     if (photo.type === "video") {
         return (
@@ -41,6 +45,8 @@ export function FullScreenViewer({
             onPrev={onPrev}
             isTrashMode={isTrashMode}
             isHiddenMode={isHiddenMode}
+            activeFaceId={activeFaceId}
+            activeClassName={activeClassName}
         />
     );
 }

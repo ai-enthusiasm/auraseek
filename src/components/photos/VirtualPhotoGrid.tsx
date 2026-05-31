@@ -29,6 +29,8 @@ interface VirtualPhotoGridProps {
   selectionMode?: boolean;
   showBbox?: boolean;
   mediaType?: "video" | "photo";
+  activeFaceId?: string;
+  activeClassName?: string;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -75,6 +77,8 @@ type GridCellProps = {
   onPhotoClick?: (photo: Photo) => void;
   selectionMode: boolean;
   showBbox: boolean;
+  activeFaceId?: string;
+  activeClassName?: string;
 };
 
 // ─── Cell Component ──────────────────────────────────────────────────────────
@@ -90,6 +94,8 @@ function PhotoCell({
   onPhotoClick,
   selectionMode,
   showBbox,
+  activeFaceId,
+  activeClassName,
 }: {
   columnIndex: number;
   rowIndex: number;
@@ -126,6 +132,8 @@ function PhotoCell({
         onClick={onPhotoClick ? () => onPhotoClick(photo) : undefined}
         selectionMode={selectionMode}
         showBbox={showBbox}
+        activeFaceId={activeFaceId}
+        activeClassName={activeClassName}
       />
     </div>
   );
@@ -139,6 +147,8 @@ export function VirtualPhotoGrid({
   selectionMode = false,
   showBbox = false,
   mediaType,
+  activeFaceId,
+  activeClassName,
 }: VirtualPhotoGridProps) {
   // Container ref for measuring available width/height
   const containerRef = useRef<HTMLDivElement>(null);
@@ -266,8 +276,10 @@ export function VirtualPhotoGrid({
       onPhotoClick,
       selectionMode,
       showBbox,
+      activeFaceId,
+      activeClassName,
     }),
-    [allPhotos, columnCount, itemCount, cellWidth, cellHeight, onPhotoClick, selectionMode, showBbox]
+    [allPhotos, columnCount, itemCount, cellWidth, cellHeight, onPhotoClick, selectionMode, showBbox, activeFaceId, activeClassName]
   );
 
   // ── Empty state ────────────────────────────────────────────────────────
