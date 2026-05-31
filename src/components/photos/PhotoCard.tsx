@@ -216,7 +216,6 @@ export function PhotoCard({
               objectFit="cover"
               showFaces={overlayShowFaces || hasActiveFace}
               showLabels={overlayShowLabels && showAllFaces}
-              showMasks={false}
               showBoxes
               activeFaceId={activeFaceId}
               showAllFaces={showAllFaces}

@@ -464,7 +464,6 @@ export function FullScreenPhotoViewer({
                                             objectFit="contain"
                                             showFaces={showBbox || !!hasActiveFace}
                                             showLabels={false}
-                                            showMasks={false}
                                             showBoxes={showBbox || !!hasActiveFace || !!hasActiveClassName}
                                             viewScale={scale}
                                             activeObjectIndex={activeObjectIndex}
