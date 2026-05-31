@@ -130,8 +130,11 @@ pub async fn process_video(
     let mut embed_count = 0usize;
     let mut last_stored_emb: Option<Vec<f32>> = None;
 
-    let qdrant_guard = qdrant.lock().await;
-    let qdrant_client = qdrant_guard.as_ref();
+    let qdrant_client_owned = {
+        let guard = qdrant.lock().await;
+        guard.clone()
+    };
+    let qdrant_client = qdrant_client_owned.as_ref();
     let scenes_clone = scenes.clone();
     let config = crate::core::config::AppConfig::global();
     let collection = &config.qdrant_collection;
@@ -160,8 +163,8 @@ pub async fn process_video(
         let frame_path = tmp_dir.join(format!("s{}_f{}.debug.jpg", s_idx, frame_idx));
         let frame_path_str = frame_path.to_string_lossy().to_string();
 
-        let output = match super::image_processor::analyze_image_raw(&frame_path_str, engine, qdrant_client).await {
-            Some(o) => o,
+        let (output, _) = match super::image_processor::analyze_image_raw(&frame_path_str, engine, qdrant_client).await {
+            Some(pair) => pair,
             None => continue,
         };
 
@@ -278,12 +281,13 @@ pub async fn process_video(
     // ── 5. Generate thumbnail from the first processed frame ──
     let video_parent = Path::new(video_path).parent().unwrap_or(Path::new("."));
     if let Some(cache_dir) = thumb_cache_dir {
-        let _ = std::fs::create_dir_all(cache_dir);
+        let _ = std::fs::create_dir_all(cache_dir.join("videos"));
+        let _ = std::fs::create_dir_all(cache_dir.join("faces"));
     }
     
     let thumb_name = format!("{}.thumb.jpg", stem);
     let thumb_path: std::path::PathBuf = thumb_cache_dir
-        .map(|d| d.join(&thumb_name))
+        .map(|d| d.join("videos").join(&thumb_name))
         .unwrap_or_else(|| video_parent.join(&thumb_name));
 
     let thumb_frame_idx: u64 = frame_jobs.first().copied().unwrap_or(0);
@@ -304,10 +308,21 @@ pub async fn process_video(
         .map(|_| thumb_path.to_string_lossy().to_string())
         .or(thumb_result.clone());
 
+    let thumb_value_rel = thumb_value_for_db.as_ref().and_then(|p| {
+        if let Some(cache_dir) = thumb_cache_dir {
+            std::path::Path::new(p)
+                .strip_prefix(cache_dir)
+                .ok()
+                .map(|rel| rel.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    }).or(thumb_value_for_db.clone());
+
     {
         let guard = sqlite.lock().unwrap();
         if let Some(ref db) = *guard {
-            if let Err(e) = DbOperations::update_media_ai(db, media_id, objects, faces, thumb_value_for_db) {
+            if let Err(e) = DbOperations::update_media_ai(db, media_id, objects, faces, thumb_value_rel, None, None) {
                 log_warn!("⚠️ update_media_ai for video {}: {}", media_id, e);
             }
             if embedding_error {
@@ -318,18 +333,19 @@ pub async fn process_video(
             for (fid, conf, bbox, name, fi) in &detected_faces_for_person {
                 let face_thumb_name = format!("{}_face_{}.thumb.jpg", stem, fid);
                 let face_thumb_path: std::path::PathBuf = thumb_cache_dir
-                    .map(|d| d.join(&face_thumb_name))
+                    .map(|d| d.join("faces").join(&face_thumb_name))
                     .unwrap_or_else(|| video_parent.join(&face_thumb_name));
                 if !face_thumb_path.exists() {
-                    let _ = extract_frame(video_path, *fi, fps, &face_thumb_path);
+                    if extract_frame(video_path, *fi, fps, &face_thumb_path).is_ok() {
+                        let _ = super::image_processor::crop_and_save_face_from_file(&face_thumb_path, bbox);
+                    }
                 }
-                let face_thumb_value = thumb_cache_dir
-                    .map(|_| face_thumb_path.to_string_lossy().to_string())
-                    .unwrap_or(face_thumb_name);
+                // Save just the relative face_thumb_name in the database, get_people will prepend cache_dir/faces dynamically
+                let face_thumb_rel = face_thumb_name;
                 if let Err(e) = DbOperations::upsert_person(db, PersonDoc {
                     face_id:   fid.clone(),
                     name:      name.clone(),
-                    thumbnail: Some(face_thumb_value),
+                    thumbnail: Some(face_thumb_rel),
                     conf:      Some(*conf),
                     face_bbox: Some(bbox.clone()),
                 }) {

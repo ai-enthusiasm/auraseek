@@ -47,6 +47,7 @@ impl FileWatcher {
         engine: Arc<Mutex<Option<AuraSeekEngine>>>,
         sync_status: Arc<Mutex<SyncStatus>>,
         thumb_cache_dir: Option<PathBuf>,
+        app_handle: Option<tauri::AppHandle>,
     ) -> anyhow::Result<FsWatcherHandle> {
         let (event_tx, mut event_rx) = mpsc::channel::<PathBuf>(512);
         let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
@@ -112,6 +113,11 @@ impl FileWatcher {
                                 total: files.len(),
                                 message: format!("Đang xử lý {} tệp mới...", files.len()),
                             };
+                            // Emit event to frontend
+                            if let Some(ref app) = app_handle {
+                                use tauri::Emitter;
+                                let _ = app.emit("sync-status-changed", st.clone());
+                            }
                         }
 
                         let ram_pct = crate::app::helpers::available_ram_percent();
@@ -148,6 +154,10 @@ impl FileWatcher {
                                     total: summary.total_found,
                                     message: format!("Đã xử lý {} ảnh mới", summary.newly_added),
                                 };
+                                if let Some(ref app) = app_handle {
+                                    use tauri::Emitter;
+                                    let _ = app.emit("sync-status-changed", st.clone());
+                                }
                             }
                             Err(e) => {
                                 crate::log_error!("❌ FS watcher ingest failed: {}", e);
@@ -158,6 +168,10 @@ impl FileWatcher {
                                     total: 0,
                                     message: format!("Lỗi xử lý: {}", e),
                                 };
+                                if let Some(ref app) = app_handle {
+                                    use tauri::Emitter;
+                                    let _ = app.emit("sync-status-changed", st.clone());
+                                }
                             }
                         }
                     }
