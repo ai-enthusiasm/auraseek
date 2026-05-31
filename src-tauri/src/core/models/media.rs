@@ -13,8 +13,6 @@ pub struct DetectedObject {
     pub class_name: String,
     pub conf:       f32,
     pub bbox:       BboxInfo,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mask_rle:   Option<Vec<[u32; 2]>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -34,12 +34,6 @@ pub struct ObjectEntry {
     pub class_name: String,
     pub conf:       f32,
     pub bbox:       Bbox,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mask_area:  Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mask_path:  Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub mask_rle:   Option<Vec<[u32; 2]>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

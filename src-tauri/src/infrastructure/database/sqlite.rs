@@ -74,10 +74,7 @@ impl SqliteDb {
                 class_id INTEGER NOT NULL REFERENCES object_class(id) ON DELETE CASCADE,
                 conf REAL NOT NULL,
                 bbox_x REAL, bbox_y REAL, bbox_w REAL, bbox_h REAL,
-                thumbnail TEXT,
-                mask_area INTEGER,
-                mask_path TEXT,
-                mask_rle BLOB
+                thumbnail TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_obj_media ON media_objects(media_id);
             CREATE INDEX IF NOT EXISTS idx_obj_class ON media_objects(class_id);
