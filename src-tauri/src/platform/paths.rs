@@ -1,4 +1,15 @@
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static TAURI_DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_tauri_data_dir(path: PathBuf) {
+    let _ = TAURI_DATA_DIR.set(path);
+}
+
+pub fn get_tauri_data_dir() -> Option<PathBuf> {
+    TAURI_DATA_DIR.get().cloned()
+}
 
 /// Return the current user's home directory.
 pub fn dirs_home() -> PathBuf {

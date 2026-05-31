@@ -36,6 +36,7 @@ pub fn run() {
             let base_data_dir = app.path().app_data_dir()
                 .unwrap_or_else(|_| crate::platform::paths::fallback_data_dir());
             crate::log_info!("📁 App data dir: {}", base_data_dir.display());
+            crate::platform::paths::set_tauri_data_dir(base_data_dir.clone());
 
             let state = app.state::<AppState>();
             *state.data_dir.lock().unwrap() = base_data_dir;
@@ -90,6 +91,7 @@ pub fn run() {
             interface::commands::people::cmd_merge_people,
             interface::commands::people::cmd_delete_person,
             interface::commands::people::cmd_remove_face_from_person,
+            interface::commands::people::cmd_generate_missing_person_thumbnails,
             interface::commands::timeline::cmd_toggle_favorite,
             interface::commands::timeline::cmd_get_timeline,
             interface::commands::timeline::cmd_move_to_trash,

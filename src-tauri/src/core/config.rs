@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 static GLOBAL_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
@@ -35,6 +36,41 @@ pub const AI_ASSETS: &[(&str, &str)] = &[
 ];
 
 pub const QDRANT_FACE_COLLECTION: &str = "face_embeddings";
+
+/// Global runtime thread count — may be lowered at runtime if RAM pressure detected.
+pub static RUNTIME_NUM_THREADS: AtomicUsize = AtomicUsize::new(1);
+
+pub fn compute_safe_threads() -> usize {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let cpu_based = (cpu_count / 2).max(1).min(8); // cap at 8 threads max
+
+    // Check available RAM
+    let ram_threads = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        let _total_mb = sys.total_memory() / (1024 * 1024);
+        let avail_mb = sys.available_memory() / (1024 * 1024);
+
+        // Limit RAM allocation to 50% of available RAM
+        let allowed_ram_mb = (avail_mb as f64 * 0.5) as u64;
+
+        // Base memory is ~600MB, each extra thread occupies ~150MB of buffers
+        if allowed_ram_mb <= 600 {
+            1
+        } else {
+            let extra_ram = allowed_ram_mb - 600;
+            let calculated_threads = 1 + (extra_ram / 150) as usize;
+            calculated_threads.min(cpu_based)
+        }
+    };
+
+    let result = cpu_based.min(ram_threads).max(1);
+    crate::log_info!("🧵 Computed safe threads: {} (cpu_based={}, ram_based={})", result, cpu_based, ram_threads);
+    result
+}
 
 #[derive(Debug, Clone)]
 pub enum DevicePreference {
@@ -91,6 +127,7 @@ pub struct AppConfig {
     pub device: DevicePreference,
     pub num_threads: usize,
 
+    pub enable_mask_rle: bool,
     pub debug: bool,
 }
 
@@ -104,17 +141,17 @@ impl Default for AppConfig {
             sqlite_path: data_dir.join("auraseek.sqlite3"),
             qdrant_port: 6354,
             qdrant_http_port: 6353,
-            qdrant_dashboard_enabled: false,
+            qdrant_dashboard_enabled: true,
             qdrant_storage_dir: data_dir.join("qdrant_storage"),
             qdrant_collection: "media_embeddings".to_string(),
             data_dir,
             log_path,
 
-            face_detection_threshold: 0.5,
+            face_detection_threshold: 0.6,
             face_identity_threshold: 0.6,
-            face_nms_iou_threshold: 0.4,
+            face_nms_iou_threshold: 0.45,
             face_top_k: 5000,
-            yolo_confidence: 0.5,
+            yolo_confidence: 0.65,
             yolo_iou: 0.9,
             search_threshold: 0.51,
             search_limit: 10000,
@@ -122,7 +159,7 @@ impl Default for AppConfig {
 
             video_scene_threshold: 0.11,
 
-            duplicate_score_threshold: 0.96,
+            duplicate_score_threshold: 0.98,
             duplicate_scroll_page_size: 256,
 
             text_query_max_len: 64,
@@ -135,8 +172,9 @@ impl Default for AppConfig {
             fs_watcher_min_ram_percent: 10.0,
 
             device: DevicePreference::Auto,
-            num_threads: 1,
+            num_threads: 0, // 0 = auto-detect at runtime via compute_safe_threads()
 
+            enable_mask_rle: false,
             debug: false,
         }
     }
@@ -294,8 +332,12 @@ impl AppConfig {
             _ => DevicePreference::Auto,
         };
 
-        let num_threads = env_or("AURASEEK_NUM_THREADS", defaults.num_threads)
-            .max(1);
+        let raw_threads = env_or("AURASEEK_NUM_THREADS", defaults.num_threads);
+        let num_threads = if raw_threads == 0 {
+            compute_safe_threads()
+        } else {
+            raw_threads.max(1)
+        };
 
         let search_threshold = clamp_f32(
             env_or("AURASEEK_SEARCH_THRESHOLD", defaults.search_threshold),
@@ -353,6 +395,7 @@ impl AppConfig {
             "AURASEEK_FS_WATCHER_MIN_RAM_PERCENT",
         );
 
+        let enable_mask_rle = env_or("AURASEEK_ENABLE_MASK_RLE", defaults.enable_mask_rle);
         let debug = env_or("AURASEEK_DEBUG", defaults.debug);
 
         Self {
@@ -385,6 +428,7 @@ impl AppConfig {
             fs_watcher_min_ram_percent,
             device,
             num_threads,
+            enable_mask_rle,
             debug,
         }
     }

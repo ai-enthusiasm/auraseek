@@ -59,7 +59,7 @@ pub fn available_ram_percent() -> f64 {
     }
 }
 
-pub fn restart_fs_watcher(state: &AppState, source_dir: &str) {
+pub fn restart_fs_watcher(state: &AppState, source_dir: &str, app_handle: Option<tauri::AppHandle>) {
     if let Ok(mut guard) = state.watcher_handle.lock() {
         if let Some(old) = guard.take() {
             old.stop();
@@ -76,6 +76,7 @@ pub fn restart_fs_watcher(state: &AppState, source_dir: &str) {
         state.engine.clone(),
         state.sync_status.clone(),
         thumb_cache_dir,
+        app_handle,
     ) {
         Ok(handle) => {
             if let Ok(mut guard) = state.watcher_handle.lock() { *guard = Some(handle); }
