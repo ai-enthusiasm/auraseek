@@ -15,6 +15,7 @@ import { FirstRunModal } from "@/components/common/FirstRunModal";
 import { EVENT_FORCE_FIRST_RUN_UI, SESSION_POST_DB_RESET } from "@/components/common/SettingsModal";
 import { LandingPage } from "@/views/LandingPage";
 import ModelDownloadScreen, { type ModelDownloadEvent } from "@/components/common/ModelDownloadScreen";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
 import { AuraSeekApi, localFileUrl, streamFileUrlSync, warmStreamPortCache, type SearchResult, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
 import type { Photo } from "@/types/photo.type";
 
@@ -300,6 +301,7 @@ function App() {
       if (st.state === "done" && lastState === "syncing") {
         // Transitioned from syncing to done -> refreshing UI automatically
         loadTimeline();
+        loadPeople();
         window.dispatchEvent(new Event("refresh_photos"));
       }
       lastState = st.state;
@@ -393,7 +395,7 @@ function App() {
 
       if (newCount > 0) {
         console.log(`[AuraSeek] ✅ Added ${newCount} new files.`);
-        await loadTimeline();
+        await Promise.all([loadTimeline(), loadPeople()]);
         window.dispatchEvent(new Event("refresh_photos"));
       } else {
         console.log("[AuraSeek] ⚠️ No new files added or all were duplicates.");
@@ -553,7 +555,7 @@ function App() {
     const lastProgressRefresh = { current: 0 };
     const unlistenPromise = listen("ingest-progress", () => {
       const now = Date.now();
-      if (now - lastProgressRefresh.current > 5000) {
+      if (now - lastProgressRefresh.current > 1000) {
         lastProgressRefresh.current = now;
         loadTimeline();
         loadPeople();
@@ -764,7 +766,9 @@ function App() {
           totalImages={photos.length}
           onReload={handleReload}
         >
-          {renderView()}
+          <ErrorBoundary>
+            {renderView()}
+          </ErrorBoundary>
         </NewLayout>
       </TooltipProvider>
     </SelectionProvider>

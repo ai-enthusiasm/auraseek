@@ -33,8 +33,24 @@ pub fn run() {
             app.state::<AppState>().stream_port.store(port, std::sync::atomic::Ordering::Relaxed);
             crate::log_info!("🎥 Video stream server started on port {}", port);
 
-            let base_data_dir = app.path().app_data_dir()
+            let mut base_data_dir = app.path().app_data_dir()
                 .unwrap_or_else(|_| crate::platform::paths::fallback_data_dir());
+
+            #[cfg(target_os = "macos")]
+            {
+                let legacy_path = crate::platform::paths::dirs_home().join("Library").join("Application Support").join("auraseek");
+                if legacy_path.join("auraseek.sqlite3").exists() {
+                    base_data_dir = legacy_path;
+                } else {
+                    if std::fs::create_dir_all(&base_data_dir).is_err() ||
+                       std::fs::write(base_data_dir.join(".write_test"), b"test").is_err() {
+                        base_data_dir = legacy_path;
+                    } else {
+                        let _ = std::fs::remove_file(base_data_dir.join(".write_test"));
+                    }
+                }
+            }
+
             crate::log_info!("📁 App data dir: {}", base_data_dir.display());
             crate::platform::paths::set_tauri_data_dir(base_data_dir.clone());
 

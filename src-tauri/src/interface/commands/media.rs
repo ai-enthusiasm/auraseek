@@ -141,6 +141,7 @@ pub async fn cmd_scan_folder(
 
 #[tauri::command]
 pub async fn cmd_ingest_files(
+    app: tauri::AppHandle,
     file_paths: Vec<String>, state: State<'_, AppState>,
 ) -> Result<IngestSummary, String> {
     let source_dir = state.source_dir.lock().await.clone();
@@ -149,12 +150,13 @@ pub async fn cmd_ingest_files(
     let sqlite_arc = state.sqlite.clone();
     let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = Some(state.data_dir.lock().unwrap().join("thumbnails"));
-    crate::app::ingest::ingest_files(file_paths, source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir)
+    crate::app::ingest::ingest_files(file_paths, source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir, Some(app))
         .await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_ingest_image_data(
+    app: tauri::AppHandle,
     data: String, ext: String, state: State<'_, AppState>,
 ) -> Result<IngestSummary, String> {
     use base64::Engine as _;
@@ -173,7 +175,7 @@ pub async fn cmd_ingest_image_data(
     let sqlite_arc = state.sqlite.clone();
     let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = Some(state.data_dir.lock().unwrap().join("thumbnails"));
-    crate::app::ingest::ingest_files(vec![dest.to_string_lossy().to_string()], source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir)
+    crate::app::ingest::ingest_files(vec![dest.to_string_lossy().to_string()], source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir, Some(app))
         .await.map_err(|e| e.to_string())
 }
 

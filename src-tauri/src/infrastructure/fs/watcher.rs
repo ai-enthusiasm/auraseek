@@ -141,6 +141,7 @@ impl FileWatcher {
                             qdrant.clone(),
                             engine.clone(),
                             thumb_cache,
+                            app_handle.clone(),
                         ).await {
                             Ok(summary) => {
                                 crate::log_info!(

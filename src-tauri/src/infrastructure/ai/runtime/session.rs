@@ -8,7 +8,7 @@ pub fn build_session(model_path: &str, num_threads: usize) -> anyhow::Result<ort
     // Define platform-specific provider preferences
     #[cfg(target_os = "macos")]
     let ep_builders: Vec<(&str, Box<dyn Fn() -> ExecutionProviderDispatch>)> = vec![
-        ("CoreML",   Box::new(|| ort::execution_providers::CoreMLExecutionProvider::default().build())),
+        ("CoreML",   Box::new(|| ort::execution_providers::CoreMLExecutionProvider::default().with_subgraphs(true).build())),
     ];
 
     #[cfg(not(target_os = "macos"))]

@@ -1,12 +1,20 @@
 use crate::app::state::AppState;
 use crate::infrastructure::database::QdrantService;
+use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use sysinfo::System;
 
-pub fn available_ram_percent() -> f64 {
-    use sysinfo::System;
+pub static SYSTEM: Lazy<Mutex<System>> = Lazy::new(|| Mutex::new(System::new()));
+
+static TOTAL_MEMORY: Lazy<f64> = Lazy::new(|| {
     let mut sys = System::new();
     sys.refresh_memory();
+    sys.total_memory() as f64
+});
 
-    let total = sys.total_memory() as f64;
+pub fn available_ram_percent() -> f64 {
+    let total = *TOTAL_MEMORY;
+    if total == 0.0 { return 50.0; }
 
     #[cfg(target_os = "macos")]
     let avail = unsafe {
@@ -26,6 +34,8 @@ pub fn available_ram_percent() -> f64 {
                 + stats.purgeable_count as u64;
             (available_pages * page_size) as f64
         } else {
+            let mut sys = SYSTEM.lock().unwrap();
+            sys.refresh_memory();
             sys.available_memory() as f64
         }
     };
@@ -44,19 +54,25 @@ pub fn available_ram_percent() -> f64 {
                 break;
             }
         }
-        mem_avail.unwrap_or(sys.available_memory() as f64)
+        mem_avail.unwrap_or_else(|| {
+            let mut sys = SYSTEM.lock().unwrap();
+            sys.refresh_memory();
+            sys.available_memory() as f64
+        })
     } else {
+        let mut sys = SYSTEM.lock().unwrap();
+        sys.refresh_memory();
         sys.available_memory() as f64
     };
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    let avail = sys.available_memory() as f64;
+    let avail = {
+        let mut sys = SYSTEM.lock().unwrap();
+        sys.refresh_memory();
+        sys.available_memory() as f64
+    };
 
-    if total > 0.0 {
-        (avail / total) * 100.0
-    } else {
-        50.0
-    }
+    (avail / total) * 100.0
 }
 
 pub fn restart_fs_watcher(state: &AppState, source_dir: &str, app_handle: Option<tauri::AppHandle>) {

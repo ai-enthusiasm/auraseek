@@ -149,16 +149,41 @@ impl DbOperations {
               }).collect();
 
             let n = phash_items.len();
-            let mut parent: Vec<usize> = (0..n).collect();
-            for i in 0..n {
-                for j in (i+1)..n {
-                    if hamming(phash_items[i].3, phash_items[j].3) <= 6 {
-                        let ri = find(&mut parent, i);
-                        let rj = find(&mut parent, j);
-                        if ri != rj { parent[ri] = rj; }
+            let num_threads = num_cpus::get();
+            let pairs = std::thread::scope(|s| {
+                let mut handles = Vec::new();
+                for thread_id in 0..num_threads {
+                    let phash_items_ref = &phash_items;
+                    let handle = s.spawn(move || {
+                        let mut local_pairs = Vec::new();
+                        for i in (thread_id..n).step_by(num_threads) {
+                            let h_i = phash_items_ref[i].3;
+                            for j in (i + 1)..n {
+                                if hamming(h_i, phash_items_ref[j].3) <= 6 {
+                                    local_pairs.push((i, j));
+                                }
+                            }
+                        }
+                        local_pairs
+                    });
+                    handles.push(handle);
+                }
+                let mut pairs = Vec::new();
+                for handle in handles {
+                    if let Ok(local_pairs) = handle.join() {
+                        pairs.extend(local_pairs);
                     }
                 }
+                pairs
+            });
+
+            let mut parent: Vec<usize> = (0..n).collect();
+            for (i, j) in pairs {
+                let ri = find(&mut parent, i);
+                let rj = find(&mut parent, j);
+                if ri != rj { parent[ri] = rj; }
             }
+
             let mut ph_clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
             for i in 0..n { ph_clusters.entry(find(&mut parent, i)).or_default().push(i); }
             for (_root, idxs) in ph_clusters {
@@ -237,121 +262,157 @@ impl DbOperations {
                 }
             }
 
-            struct EmbRow { media_id: String, vec: Vec<f32>, frame_idx: Option<u32> }
-            let all_embs: Vec<EmbRow> = all_points.into_iter().filter_map(|p| {
-                let media_id = p.payload.get("media_id")?.as_str()?.to_string();
-                let frame_idx = p.payload.get("frame_idx").and_then(|v| v.as_integer()).map(|i| i as u32);
-                let vectors = p.vectors?;
-                let vec = match vectors.vectors_options? {
-                    qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v) => match v.into_vector() {
-                        vector_output::Vector::Dense(dense) => dense.data,
+            tokio::task::spawn_blocking(move || -> Result<Vec<DuplicateGroup>> {
+                struct EmbRow { media_id: String, vec: Vec<f32>, frame_idx: Option<u32> }
+                let all_embs: Vec<EmbRow> = all_points.into_iter().filter_map(|p| {
+                    let media_id = p.payload.get("media_id")?.as_str()?.to_string();
+                    let frame_idx = p.payload.get("frame_idx").and_then(|v| v.as_integer()).map(|i| i as u32);
+                    let vectors = p.vectors?;
+                    let vec = match vectors.vectors_options? {
+                        qdrant_client::qdrant::vectors_output::VectorsOptions::Vector(v) => match v.into_vector() {
+                            vector_output::Vector::Dense(dense) => dense.data,
+                            _ => return None,
+                        },
                         _ => return None,
-                    },
-                    _ => return None,
-                };
-                Some(EmbRow { media_id, vec, frame_idx })
-            }).collect();
-
-            let mut rep_embs: std::collections::HashMap<String, (&EmbRow, u32)> = std::collections::HashMap::new();
-            for e in &all_embs {
-                let fi = e.frame_idx.unwrap_or(u32::MAX);
-                rep_embs.entry(e.media_id.clone())
-                    .and_modify(|(prev, prev_fi)| { if fi < *prev_fi { *prev = e; *prev_fi = fi; } })
-                    .or_insert((e, fi));
-            }
-            let rep: Vec<(&EmbRow, String)> = rep_embs.into_iter().map(|(mid, (e, _))| (e, mid)).collect();
-
-            let mut groups: Vec<DuplicateGroup> = vec![];
-
-            if rep.len() > 1 {
-                // Pre-normalize all embeddings for extremely fast dot-product cosine similarity
-                let rep_vecs: Vec<Vec<f32>> = rep.iter().map(|(e, _)| {
-                    let mut vec = e.vec.clone();
-                    let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
-                    let divisor = if norm > 0.0 { norm } else { 1.0 };
-                    for x in &mut vec {
-                        *x /= divisor;
-                    }
-                    vec
+                    };
+                    Some(EmbRow { media_id, vec, frame_idx })
                 }).collect();
 
-                let mut pairs: Vec<(usize, usize)> = Vec::new();
-                for i in 0..rep.len() {
-                    let v_i = &rep_vecs[i];
-                    for j in (i + 1)..rep.len() {
-                        let v_j = &rep_vecs[j];
-                        let sim = v_i.iter().zip(v_j.iter()).map(|(a, b)| a * b).sum::<f32>();
-                        if sim >= duplicate_threshold {
-                            pairs.push((i, j));
+                let mut rep_embs: std::collections::HashMap<String, (&EmbRow, u32)> = std::collections::HashMap::new();
+                for e in &all_embs {
+                    let fi = e.frame_idx.unwrap_or(u32::MAX);
+                    rep_embs.entry(e.media_id.clone())
+                        .and_modify(|(prev, prev_fi)| { if fi < *prev_fi { *prev = e; *prev_fi = fi; } })
+                        .or_insert((e, fi));
+                }
+                let rep: Vec<(&EmbRow, String)> = rep_embs.into_iter().map(|(mid, (e, _))| (e, mid)).collect();
+
+                let mut groups: Vec<DuplicateGroup> = vec![];
+
+                if rep.len() > 1 {
+                    let dim = rep[0].0.vec.len();
+                    // Pre-normalize all embeddings into flat vector
+                    let mut rep_vecs = Vec::with_capacity(rep.len() * dim);
+                    for (e, _) in &rep {
+                        let mut vec = e.vec.clone();
+                        let norm = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+                        let divisor = if norm > 0.0 { norm } else { 1.0 };
+                        for x in &mut vec {
+                            *x /= divisor;
+                        }
+                        rep_vecs.extend_from_slice(&vec);
+                    }
+
+                    let n = rep.len();
+                    let num_threads = num_cpus::get();
+
+                    #[inline(always)]
+                    fn dot_product(a: &[f32], b: &[f32], dim: usize) -> f32 {
+                        let mut sum = 0.0;
+                        for i in 0..dim {
+                            unsafe {
+                                sum += a.get_unchecked(i) * b.get_unchecked(i);
+                            }
+                        }
+                        sum
+                    }
+
+                    let pairs = std::thread::scope(|s| {
+                        let mut handles = Vec::new();
+                        for thread_id in 0..num_threads {
+                            let rep_vecs_ref = &rep_vecs;
+                            let handle = s.spawn(move || {
+                                let mut local_pairs = Vec::new();
+                                for i in (thread_id..n).step_by(num_threads) {
+                                    let v_i = &rep_vecs_ref[i * dim .. (i + 1) * dim];
+                                    for j in (i + 1)..n {
+                                        let v_j = &rep_vecs_ref[j * dim .. (j + 1) * dim];
+                                        let sim = dot_product(v_i, v_j, dim);
+                                        if sim >= duplicate_threshold {
+                                            local_pairs.push((i, j));
+                                        }
+                                    }
+                                }
+                                local_pairs
+                            });
+                            handles.push(handle);
+                        }
+
+                        let mut pairs = Vec::new();
+                        for handle in handles {
+                            if let Ok(local_pairs) = handle.join() {
+                                pairs.extend(local_pairs);
+                            }
+                        }
+                        pairs
+                    });
+
+                    if !pairs.is_empty() {
+                        let mut par: Vec<usize> = (0..n).collect();
+                        for (i, j) in pairs {
+                            let ri = find(&mut par, i);
+                            let rj = find(&mut par, j);
+                            if ri != rj { par[ri] = rj; }
+                        }
+                        let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+                        for i in 0..n { clusters.entry(find(&mut par, i)).or_default().push(i); }
+
+                        let base = source_dir_v.trim_end_matches('/');
+
+                        // Lock SQLite for the final DB lookups
+                        let guard = sqlite_v.lock().unwrap();
+                        let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
+                        let conn = db.conn();
+
+                        let mut ci = 0usize;
+                        for (_root, idxs) in clusters {
+                            if idxs.len() < 2 { continue; }
+                            let ids: Vec<String> = idxs.iter().map(|&i| rep[i].1.clone()).collect();
+
+                            let placeholders: String = ids.iter().enumerate()
+                                .map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+                            let q = format!(
+                                "SELECT id, file_name, file_size, thumbnail FROM media WHERE id IN ({})", placeholders
+                            );
+                            let mut s3 = conn.prepare(&q)?;
+                            let id_params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+                            let items: Vec<(String, Option<String>, i64, Option<String>)> = s3.query_map(id_params.as_slice(), |r| {
+                                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+                            })?.filter_map(|r| r.ok()).collect();
+
+                            if items.len() < 2 { continue; }
+                            let reason = match media_type_v.as_deref() {
+                                Some("video") => "Video gần giống nhau (AI phát hiện đoạn đầu tương tự ≥ 92%)",
+                                _ => "Ảnh gần giống nhau (AI phát hiện ≥ 92%)",
+                            };
+                            groups.push(DuplicateGroup {
+                                group_id: format!("vec_{}_{}", ci, items[0].0),
+                                reason: reason.into(),
+                                items: items.into_iter().map(|(id, name, size, thumb)| {
+                                    let file_path = name.as_ref().map(|n| format!("{}/{}", base, n)).unwrap_or_default();
+                                    let thumbnail_path = thumb.map(|t| {
+                                        if std::path::Path::new(&t).is_absolute() {
+                                            t
+                                        } else if let Some(ref cache_dir) = thumb_cache_dir_v {
+                                            cache_dir.join(&t).to_string_lossy().to_string()
+                                        } else {
+                                            format!("{}/{}", base, t)
+                                        }
+                                    })
+                                    .or_else(|| {
+                                        if media_type_v.as_deref() != Some("video") { return None; }
+                                        resolve_video_thumb_fallback(base, name.as_deref()?, thumb_cache_dir_v.as_deref())
+                                    });
+                                    DuplicateItem { media_id: id, file_path, size: size as u64, thumbnail_path }
+                                }).collect(),
+                            });
+                            ci += 1;
                         }
                     }
                 }
 
-                if !pairs.is_empty() {
-                    let mut par: Vec<usize> = (0..rep.len()).collect();
-                    for (i, j) in pairs {
-                        let ri = find(&mut par, i);
-                        let rj = find(&mut par, j);
-                        if ri != rj { par[ri] = rj; }
-                    }
-                    let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
-                    for i in 0..rep.len() { clusters.entry(find(&mut par, i)).or_default().push(i); }
-
-                    let base = source_dir_v.trim_end_matches('/');
-
-                    // Lock SQLite for the final DB lookups
-                    let guard = sqlite_v.lock().unwrap();
-                    let db = guard.as_ref().ok_or_else(|| anyhow::anyhow!("DB not initialized"))?;
-                    let conn = db.conn();
-
-                    let mut ci = 0usize;
-                    for (_root, idxs) in clusters {
-                        if idxs.len() < 2 { continue; }
-                        let ids: Vec<String> = idxs.iter().map(|&i| rep[i].1.clone()).collect();
-
-                        let placeholders: String = ids.iter().enumerate()
-                            .map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
-                        let q = format!(
-                            "SELECT id, file_name, file_size, thumbnail FROM media WHERE id IN ({})", placeholders
-                        );
-                        let mut s3 = conn.prepare(&q)?;
-                        let id_params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
-                        let items: Vec<(String, Option<String>, i64, Option<String>)> = s3.query_map(id_params.as_slice(), |r| {
-                            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                        })?.filter_map(|r| r.ok()).collect();
-
-                        if items.len() < 2 { continue; }
-                        let reason = match media_type_v.as_deref() {
-                            Some("video") => "Video gần giống nhau (AI phát hiện đoạn đầu tương tự ≥ 92%)",
-                            _ => "Ảnh gần giống nhau (AI phát hiện ≥ 92%)",
-                        };
-                        groups.push(DuplicateGroup {
-                            group_id: format!("vec_{}_{}", ci, items[0].0),
-                            reason: reason.into(),
-                            items: items.into_iter().map(|(id, name, size, thumb)| {
-                                let file_path = name.as_ref().map(|n| format!("{}/{}", base, n)).unwrap_or_default();
-                                let thumbnail_path = thumb.map(|t| {
-                                    if std::path::Path::new(&t).is_absolute() {
-                                        t
-                                    } else if let Some(ref cache_dir) = thumb_cache_dir_v {
-                                        cache_dir.join(&t).to_string_lossy().to_string()
-                                    } else {
-                                        format!("{}/{}", base, t)
-                                    }
-                                })
-                                .or_else(|| {
-                                    if media_type_v.as_deref() != Some("video") { return None; }
-                                    resolve_video_thumb_fallback(base, name.as_deref()?, thumb_cache_dir_v.as_deref())
-                                });
-                                DuplicateItem { media_id: id, file_path, size: size as u64, thumbnail_path }
-                            }).collect(),
-                        });
-                        ci += 1;
-                    }
-                }
-            }
-
-            Ok::<Vec<DuplicateGroup>, anyhow::Error>(groups)
+                Ok::<Vec<DuplicateGroup>, anyhow::Error>(groups)
+            }).await?
         });
 
         // ── Await all tasks concurrently ──

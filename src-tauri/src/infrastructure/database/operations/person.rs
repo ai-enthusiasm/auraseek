@@ -10,17 +10,17 @@ impl DbOperations {
         let conn = db.conn();
         use rusqlite::OptionalExtension;
 
-        let existing: Option<(Option<f32>,)> = conn.query_row(
-            "SELECT conf FROM person WHERE face_id = ?1",
+        let existing: Option<(Option<f32>, Option<String>)> = conn.query_row(
+            "SELECT conf, thumbnail FROM person WHERE face_id = ?1",
             params![person.face_id],
-            |r| Ok((r.get(0)?,)),
+            |r| Ok((r.get(0)?, r.get(1)?)),
         ).optional()?;
 
         match existing {
-            Some((old_conf,)) => {
+            Some((old_conf, old_thumb)) => {
                 let should_upgrade = match (person.conf, old_conf) {
                     (Some(_), None) => true,
-                    (Some(new_c), Some(old_c)) => new_c > old_c,
+                    (Some(new_c), Some(old_c)) => new_c >= old_c,
                     _ => false,
                 };
                 if should_upgrade {
@@ -37,11 +37,21 @@ impl DbOperations {
                          WHERE face_id = ?1",
                         params![person.face_id, person.name, person.conf, person.thumbnail, bx, by, bw, bh],
                     )?;
-                } else if person.name.is_some() {
-                    conn.execute(
-                        "UPDATE person SET name = COALESCE(?2, name) WHERE face_id = ?1",
-                        params![person.face_id, person.name],
-                    )?;
+                } else {
+                    let new_is_face = person.thumbnail.as_ref().map(|t| t.starts_with("face_") || t.contains("_face_")).unwrap_or(false);
+                    let old_is_face = old_thumb.as_ref().map(|t| t.starts_with("face_") || t.contains("_face_")).unwrap_or(false);
+                    if new_is_face && !old_is_face {
+                        conn.execute(
+                            "UPDATE person SET thumbnail = ?2 WHERE face_id = ?1",
+                            params![person.face_id, person.thumbnail],
+                        )?;
+                    }
+                    if person.name.is_some() {
+                        conn.execute(
+                            "UPDATE person SET name = COALESCE(?2, name) WHERE face_id = ?1",
+                            params![person.face_id, person.name],
+                        )?;
+                    }
                 }
             }
             None => {

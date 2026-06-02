@@ -21,13 +21,40 @@ pub fn dirs_home() -> PathBuf {
 
 /// Platform-aware fallback when `app_data_dir()` fails.
 pub fn fallback_data_dir() -> PathBuf {
+    if let Some(dir) = get_tauri_data_dir() {
+        return dir;
+    }
+
     #[cfg(windows)]
     {
         PathBuf::from(std::env::var("APPDATA").unwrap_or_default()).join("auraseek")
     }
     #[cfg(target_os = "macos")]
     {
-        dirs_home().join("Library").join("Application Support").join("auraseek")
+        let primary_path = dirs_home().join("Library").join("Application Support").join("com.aienthusiasm.auraseek");
+        let legacy_path = dirs_home().join("Library").join("Application Support").join("auraseek");
+
+        // 1. If legacy database exists, keep using the legacy path to preserve data
+        if legacy_path.join("auraseek.sqlite3").exists() {
+            return legacy_path;
+        }
+
+        // 2. If primary database exists, use it
+        if primary_path.join("auraseek.sqlite3").exists() {
+            return primary_path;
+        }
+
+        // 3. Otherwise, check if we can write to the primary path
+        if std::fs::create_dir_all(&primary_path).is_ok() {
+            let test_file = primary_path.join(".write_test");
+            if std::fs::write(&test_file, b"test").is_ok() {
+                let _ = std::fs::remove_file(test_file);
+                return primary_path;
+            }
+        }
+
+        // 4. Fallback to legacy path if primary is not writable
+        legacy_path
     }
     #[cfg(target_os = "linux")]
     {

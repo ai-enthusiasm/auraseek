@@ -63,9 +63,18 @@ function MiniFaceCropAvatar({
                 const faceCy = bbox.y + bbox.h / 2;
                 const cropSize = Math.max(bbox.w, bbox.h) * 2;
 
+                const clampedSize = Math.min(cropSize, naturalW, naturalH);
+                if (clampedSize <= 0 || !isFinite(clampedSize)) {
+                    setBgStyle({
+                        backgroundImage: `url("${url}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                    });
+                    return;
+                }
+
                 let cropX = faceCx - cropSize / 2;
                 let cropY = faceCy - cropSize / 2;
-                const clampedSize = Math.min(cropSize, naturalW, naturalH);
                 cropX = Math.max(0, Math.min(cropX, naturalW - clampedSize));
                 cropY = Math.max(0, Math.min(cropY, naturalH - clampedSize));
 
@@ -73,11 +82,22 @@ function MiniFaceCropAvatar({
                 const scale = targetSize / clampedSize;
                 const bgW = naturalW * scale;
                 const bgH = naturalH * scale;
+                const posX = -cropX * scale;
+                const posY = -cropY * scale;
+
+                if (!isFinite(scale) || !isFinite(bgW) || !isFinite(bgH) || !isFinite(posX) || !isFinite(posY)) {
+                    setBgStyle({
+                        backgroundImage: `url("${url}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                    });
+                    return;
+                }
 
                 setBgStyle({
                     backgroundImage: `url("${url}")`,
                     backgroundSize: `${bgW}px ${bgH}px`,
-                    backgroundPosition: `${-cropX * scale}px ${-cropY * scale}px`,
+                    backgroundPosition: `${posX}px ${posY}px`,
                     backgroundRepeat: "no-repeat",
                 });
             };
@@ -116,6 +136,14 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
         if (open) {
             setLocalFilters(activeFilters || {});
             loadDbData();
+
+            const handleRefresh = () => {
+                loadDbData();
+            };
+            window.addEventListener("refresh_photos", handleRefresh);
+            return () => {
+                window.removeEventListener("refresh_photos", handleRefresh);
+            };
         }
     }, [open, activeFilters]);
 

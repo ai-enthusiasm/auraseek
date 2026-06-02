@@ -197,8 +197,10 @@ pub async fn ingest_folder(
     let errors_counter      = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let processed_counter   = Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
-    let safe_threads = crate::core::config::compute_safe_threads();
-    let concurrency_limit = safe_threads.max(2);
+    // Since AI inference is fully serialized by the engine mutex, there is no benefit to high concurrency.
+    // Overlapping disk I/O and thumbnailing of the next image with the current AI inference is fully achieved with concurrency 2.
+    // Capping concurrency at 2 prevents thread starvation and thermal throttling.
+    let concurrency_limit = 2;
     crate::log_info!("⚙️ Ingestion concurrency limit set to: {}", concurrency_limit);
 
     let app_handle = app.clone();
@@ -238,7 +240,7 @@ pub async fn ingest_folder(
                     .unwrap_or("")
                     .to_string();
 
-                check_system_congestion_and_throttle();
+                check_system_congestion_and_throttle().await;
 
                 // 1. Scan/register the file in the database (hashing is parallel outside DB lock)
                 let scan_res = scan_single_file(&path, &sqlite, &source_dir, &media_type);
@@ -320,6 +322,7 @@ pub async fn ingest_files(
     qdrant: Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: Arc<Mutex<Option<AuraSeekEngine>>>,
     thumb_cache_dir: Option<PathBuf>,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<IngestSummary> {
     let dest_path = Path::new(&dest_dir);
     if !dest_path.exists() {
@@ -334,7 +337,7 @@ pub async fn ingest_files(
     };
 
     for src_path_str in &file_paths {
-        check_system_congestion_and_throttle();
+        check_system_congestion_and_throttle().await;
 
         let src = Path::new(src_path_str);
         let file_name = match src.file_name().and_then(|n| n.to_str()) {
@@ -348,6 +351,19 @@ pub async fn ingest_files(
         if !is_image && !is_video {
             crate::log_warn!("⚠️ Skipping unsupported file: {}", file_name);
             summary.skipped_dup += 1;
+            
+            // Emit progress event for skipped unsupported file
+            let completed = summary.newly_added + summary.skipped_dup + summary.errors;
+            if let Some(ref app) = app_handle {
+                let _ = app.emit(
+                    "ingest-progress",
+                    &IngestProgress {
+                        processed: completed,
+                        total: file_paths.len(),
+                        current_file: file_name.clone(),
+                    },
+                );
+            }
             continue;
         }
         let media_type = if is_video { "video" } else { "image" };
@@ -357,6 +373,19 @@ pub async fn ingest_files(
             if let Err(e) = std::fs::copy(src, &dest) {
                 crate::log_warn!("⚠️ Failed to copy {} -> {}: {}", src_path_str, dest.display(), e);
                 summary.errors += 1;
+                
+                // Emit progress event for failed copy
+                let completed = summary.newly_added + summary.skipped_dup + summary.errors;
+                if let Some(ref app) = app_handle {
+                    let _ = app.emit(
+                        "ingest-progress",
+                        &IngestProgress {
+                            processed: completed,
+                            total: file_paths.len(),
+                            current_file: file_name.clone(),
+                        },
+                    );
+                }
                 continue;
             }
         }
@@ -386,27 +415,67 @@ pub async fn ingest_files(
                 summary.errors += 1;
             }
         }
+
+        // Emit progress event
+        let completed = summary.newly_added + summary.skipped_dup + summary.errors;
+        if let Some(ref app) = app_handle {
+            let _ = app.emit(
+                "ingest-progress",
+                &IngestProgress {
+                    processed: completed,
+                    total: file_paths.len(),
+                    current_file: file_name.clone(),
+                },
+            );
+        }
     }
 
     Ok(summary)
 }
 
-fn check_system_congestion_and_throttle() {
-    use sysinfo::System;
-    let mut sys = System::new();
-    sys.refresh_memory();
-    sys.refresh_cpu_all();
+struct ThrottleState {
+    last_check: Option<std::time::Instant>,
+    free_pct: f64,
+    cpu_load: f32,
+}
 
-    let free_pct = crate::app::helpers::available_ram_percent();
-    let cpu_load = sys.global_cpu_usage();
+static THROTTLE_STATE: once_cell::sync::Lazy<std::sync::Mutex<ThrottleState>> = once_cell::sync::Lazy::new(|| {
+    std::sync::Mutex::new(ThrottleState {
+        last_check: None,
+        free_pct: 100.0,
+        cpu_load: 0.0,
+    })
+});
+
+async fn check_system_congestion_and_throttle() {
+    let now = std::time::Instant::now();
+    let (free_pct, cpu_load) = {
+        let mut state = THROTTLE_STATE.lock().unwrap();
+        let cache_valid = state.last_check.map(|last| now.duration_since(last) < std::time::Duration::from_secs(3)).unwrap_or(false);
+        if cache_valid {
+            (state.free_pct, state.cpu_load)
+        } else {
+            let free = crate::app::helpers::available_ram_percent();
+            let cpu = {
+                let mut sys = crate::app::helpers::SYSTEM.lock().unwrap();
+                sys.refresh_cpu_all();
+                sys.global_cpu_usage()
+            };
+
+            state.last_check = Some(now);
+            state.free_pct = free;
+            state.cpu_load = cpu;
+            (free, cpu)
+        }
+    };
 
     if free_pct < 10.0 || cpu_load > 90.0 {
         crate::log_warn!(
             "⚠️ System resource pressure detected! Available RAM: {:.1}%, CPU Load: {:.1}%. Throttling ingestion...",
             free_pct, cpu_load
         );
-        std::thread::sleep(std::time::Duration::from_millis(1500));
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
     } else if free_pct < 20.0 || cpu_load > 75.0 {
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
     }
 }

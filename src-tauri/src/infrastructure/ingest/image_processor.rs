@@ -167,25 +167,33 @@ pub async fn process_image_file(
     let faces = convert_faces(&output);
     let detected_faces = extract_person_data(&faces);
 
+    // ── Generate face thumbnails ──────────────────────────────────────────
+    let mut face_thumbnails: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    if let Some(cache_dir) = thumb_cache_dir {
+        let faces_dir = cache_dir.join("faces");
+        if !detected_faces.is_empty() {
+            if let Some(ref decoded_img) = output.decoded_image {
+                for (fid, _, bbox) in &detected_faces {
+                    match generate_face_thumbnail(decoded_img, bbox, &faces_dir, fid) {
+                        Ok(p) => {
+                            face_thumbnails.insert(fid.clone(), p);
+                        }
+                        Err(e) => {
+                            crate::log_warn!("  ⚠️ Face thumbnail failed for face_id={} in {}: {}", fid, path_str, e);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // ── Generate thumbnail for grid view ──────────────────────────────────
     // Reuse the decoded DynamicImage from the AI engine if available,
     // otherwise fall back to reading from disk (legacy path).
     let t_thumb = std::time::Instant::now();
-    let mut face_thumbnails: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let thumb_path: Option<String> = thumb_cache_dir.and_then(|cache_dir| {
         let photos_dir = cache_dir.join("photos");
-        let faces_dir = cache_dir.join("faces");
         let result = if let Some(ref decoded_img) = output.decoded_image {
-            for (fid, _, bbox) in &detected_faces {
-                match generate_face_thumbnail(decoded_img, bbox, &faces_dir, fid) {
-                    Ok(p) => {
-                        face_thumbnails.insert(fid.clone(), p);
-                    }
-                    Err(e) => {
-                        crate::log_warn!("  ⚠️ Face thumbnail failed for face_id={} in {}: {}", fid, path_str, e);
-                    }
-                }
-            }
             generate_thumbnail_from_image(decoded_img, &photos_dir, media_id)
         } else {
             let source = Path::new(path_str);

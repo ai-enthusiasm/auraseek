@@ -74,20 +74,69 @@ impl YoloModel {
             vec![1usize, 3, 640, 640],
             blob.into_boxed_slice(),
         ))?;
-        let outputs = self.session.run(ort::inputs!["images" => img_tensor])?;
+        let outputs = self.session.run(ort::inputs!["pixel_values" => img_tensor])?;
 
-        let (shape0, det_data)   = outputs[0].try_extract_tensor::<f32>()?;
+        let logits_val = &outputs["logits"];
+        let pred_boxes_val = &outputs["pred_boxes"];
+        let (logits_shape, logits_data) = logits_val.try_extract_tensor::<f32>()?;
+        let (_pred_boxes_shape, pred_boxes_data) = pred_boxes_val.try_extract_tensor::<f32>()?;
+
+        let n_det = logits_shape[1] as usize;
+        let n_class = logits_shape[2] as usize;
+
+        let mut det = Vec::with_capacity(n_det * 6);
+        for i in 0..n_det {
+            let cx = pred_boxes_data[i * 4];
+            let cy = pred_boxes_data[i * 4 + 1];
+            let w  = pred_boxes_data[i * 4 + 2];
+            let h  = pred_boxes_data[i * 4 + 3];
+
+            // Convert normalized [cx, cy, w, h] to absolute coordinates [x1, y1, x2, y2] relative to 640x640 space
+            let x1 = (cx - w / 2.0) * 640.0;
+            let y1 = (cy - h / 2.0) * 640.0;
+            let x2 = (cx + w / 2.0) * 640.0;
+            let y2 = (cy + h / 2.0) * 640.0;
+
+            let mut max_score = 0.0f32;
+            let mut max_class_id = 0;
+            for class_id in 0..n_class {
+                let logit = logits_data[i * n_class + class_id];
+                let score = 1.0 / (1.0 + (-logit).exp());
+                if score > max_score {
+                    max_score = score;
+                    max_class_id = class_id;
+                }
+            }
+
+            det.push(x1);
+            det.push(y1);
+            det.push(x2);
+            det.push(y2);
+            det.push(max_score);
+            det.push(max_class_id as f32);
+        }
 
         Ok(YoloRawResult {
-            det:         det_data.to_vec() as Vec<f32>,
-            n_det:       shape0[1] as usize,
-            det_dim:     shape0[2] as usize,
+            det,
+            n_det,
+            det_dim: 6,
             class_names: self.class_names.clone(),
         })
     }
 
     fn load_class_names(path: &str) -> Vec<String> {
-        let fallback = || (0..80).map(|i| format!("cls_{}", i)).collect::<Vec<_>>();
+        let fallback = || {
+            vec![
+                "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light",
+                "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow",
+                "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
+                "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle",
+                "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
+                "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed",
+                "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven",
+                "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush"
+            ].into_iter().map(String::from).collect::<Vec<_>>()
+        };
         let Ok(bytes) = std::fs::read(path) else { return fallback(); };
         let text = String::from_utf8_lossy(&bytes);
 
@@ -118,3 +167,4 @@ impl YoloModel {
             .collect()
     }
 }
+

@@ -40,20 +40,42 @@ function FaceCropAvatar({
         const faceCy = bbox.y + bbox.h / 2;
         const cropSize = Math.max(bbox.w, bbox.h) * 2;
 
+        const clampedSize = Math.min(cropSize, naturalW, naturalH);
+        if (clampedSize <= 0 || !isFinite(clampedSize)) {
+            setBgStyle({
+                backgroundImage: `url("${imageUrl}")`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+            });
+            setLoaded(true);
+            return;
+        }
+
         let cropX = faceCx - cropSize / 2;
         let cropY = faceCy - cropSize / 2;
-        const clampedSize = Math.min(cropSize, naturalW, naturalH);
         cropX = Math.max(0, Math.min(cropX, naturalW - clampedSize));
         cropY = Math.max(0, Math.min(cropY, naturalH - clampedSize));
 
         const scale = AVATAR_PX / clampedSize;
         const bgW = naturalW * scale;
         const bgH = naturalH * scale;
+        const posX = -cropX * scale;
+        const posY = -cropY * scale;
+
+        if (!isFinite(scale) || !isFinite(bgW) || !isFinite(bgH) || !isFinite(posX) || !isFinite(posY)) {
+            setBgStyle({
+                backgroundImage: `url("${imageUrl}")`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+            });
+            setLoaded(true);
+            return;
+        }
 
         setBgStyle({
             backgroundImage: `url("${imageUrl}")`,
             backgroundSize: `${bgW}px ${bgH}px`,
-            backgroundPosition: `${-cropX * scale}px ${-cropY * scale}px`,
+            backgroundPosition: `${posX}px ${posY}px`,
             backgroundRepeat: "no-repeat",
         });
         setLoaded(true);
@@ -129,8 +151,10 @@ function PersonCard({
         if (!el) return;
 
         const observer = new IntersectionObserver(
-            ([entry]) => {
-                setIsInViewport(entry.isIntersecting);
+            (entries) => {
+                if (entries && entries[0]) {
+                    setIsInViewport(entries[0].isIntersecting);
+                }
             },
             {
                 rootMargin: "300px",
@@ -142,6 +166,15 @@ function PersonCard({
 
     const [editing, setEditing] = useState(false);
     const [name, setName] = useState(person.name || "");
+
+    const rawPath = person.thumbnail || person.cover_path;
+    const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!isInViewport) return;
+        if (!rawPath) { setImageUrl(null); return; }
+        setImageUrl(localFileUrl(rawPath));
+    }, [rawPath, isInViewport]);
 
     const handleSave = async () => {
         if (!name.trim()) return;
@@ -155,6 +188,14 @@ function PersonCard({
     };
 
     const displayName = person.name || `Người ${index + 1}`;
+
+    const handleClick = () => {
+        if (isDeleteMode) {
+            onToggleSelect(person.face_id);
+        } else {
+            onNavigate?.({ id: person.face_id, title: displayName });
+        }
+    };
 
     if (!isInViewport) {
         return (
@@ -171,23 +212,6 @@ function PersonCard({
             </div>
         );
     }
-
-    const rawPath = person.thumbnail || person.cover_path;
-    const [imageUrl, setImageUrl] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (!isInViewport) return;
-        if (!rawPath) { setImageUrl(null); return; }
-        setImageUrl(localFileUrl(rawPath));
-    }, [rawPath, isInViewport]);
-
-    const handleClick = () => {
-        if (isDeleteMode) {
-            onToggleSelect(person.face_id);
-        } else {
-            onNavigate?.({ id: person.face_id, title: displayName });
-        }
-    };
 
     const isCroppedFace = !!(person.thumbnail && person.thumbnail.includes("face_"));
 
@@ -260,22 +284,22 @@ function PersonCard({
 }
 
 export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
-    const [localPeople, setLocalPeople] = useState<PersonGroup[]>(people);
+    const [localPeople, setLocalPeople] = useState<PersonGroup[]>(people || []);
     const [isDeleteMode, setIsDeleteMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     useEffect(() => {
-        setLocalPeople(people);
+        setLocalPeople(people || []);
     }, [people]);
 
     // Only display persons that appear in 2+ photos — single-photo detections are usually
     // false-positives or too ambiguous to be useful as a person group.
-    const visiblePeople = localPeople.filter(p => p.photo_count >= 2);
+    const visiblePeople = (localPeople || []).filter(p => p && p.photo_count >= 2);
 
     const handleRename = (faceId: string, name: string) => {
         setLocalPeople(prev =>
-            prev.map(p => p.face_id === faceId ? { ...p, name } : p)
+            (prev || []).map(p => p.face_id === faceId ? { ...p, name } : p)
         );
     };
 
@@ -293,7 +317,7 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
         try {
             await Promise.all(idsToDelete.map(id => AuraSeekApi.deletePerson(id)));
             // Refresh local state
-            setLocalPeople(prev => prev.filter(p => !selectedIds.has(p.face_id)));
+            setLocalPeople(prev => (prev || []).filter(p => !selectedIds.has(p.face_id)));
             setIsDeleteMode(false);
             setSelectedIds(new Set());
             setShowDeleteConfirm(false);
@@ -312,7 +336,7 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
                             Tự động nhóm khuôn mặt bằng AI. Click vào tên để đặt tên dễ nhớ hơn.
                         </p>
                     </div>
-                    {localPeople.length > 0 && (
+                    {(localPeople || []).length > 0 && (
                         <div className="flex items-center gap-2">
                             {isDeleteMode ? (
                                 <>
@@ -352,8 +376,8 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
                 {visiblePeople.length === 0 ? (
                     <div className="text-center py-20 text-muted-foreground opacity-60">
                         <div className="text-5xl mb-4">🤖</div>
-                        <p className="font-medium">{localPeople.length === 0 ? "Chưa có khuôn mặt nào được nhận diện" : "Chưa đủ dữ liệu"}</p>
-                        <p className="text-sm mt-1">{localPeople.length === 0 ? "Hãy quét thư viện ảnh để AI nhận diện khuôn mặt tự động" : "Cần ít nhất 2 ảnh có cùng người để hiển thị trong danh sách"}</p>
+                        <p className="font-medium">{(localPeople || []).length === 0 ? "Chưa có khuôn mặt nào được nhận diện" : "Chưa đủ dữ liệu"}</p>
+                        <p className="text-sm mt-1">{(localPeople || []).length === 0 ? "Hãy quét thư viện ảnh để AI nhận diện khuôn mặt tự động" : "Cần ít nhất 2 ảnh có cùng người để hiển thị trong danh sách"}</p>
                     </div>
                 ) : (
                     <div className="grid grid-cols-2 min-[500px]:grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-y-10 gap-x-4">
