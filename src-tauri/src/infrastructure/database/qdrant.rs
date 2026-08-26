@@ -14,13 +14,13 @@ use qdrant_client::qdrant::{
 
 use crate::platform::process::hidden_command;
 
-const QDRANT_VERSION: &str = "v1.13.2";
+const QDRANT_VERSION: &str = "v1.18.0";
 const QDRANT_WEB_UI_VERSION: &str = "v0.2.11";
 
 pub struct QdrantService;
 
 pub struct QdrantStartResult {
-    pub child: Child,
+    pub child: Option<Child>,
     pub grpc_port: u16,
     pub http_port: u16,
 }
@@ -153,6 +153,36 @@ impl QdrantService {
         status.parse().ok()
     }
 
+    fn http_is_qdrant(port: u16) -> bool {
+        let addr: SocketAddr = match format!("127.0.0.1:{}", port).parse() {
+            Ok(a) => a,
+            Err(_) => return false,
+        };
+        let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
+        let req = format!(
+            "GET / HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nConnection: close\r\n\r\n",
+            port
+        );
+        if stream.write_all(req.as_bytes()).is_err() {
+            return false;
+        }
+
+        let mut buf = [0u8; 1024];
+        let n = match stream.read(&mut buf) {
+            Ok(size) => size,
+            Err(_) => return false,
+        };
+        let response = match std::str::from_utf8(&buf[..n]) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        response.to_lowercase().contains("qdrant")
+    }
+
     pub fn wait_ready(
         child: &mut Child,
         storage_dir: &Path,
@@ -217,6 +247,36 @@ impl QdrantService {
         http_port: u16,
         dashboard_enabled: bool,
     ) -> Result<QdrantStartResult> {
+        // 1. Check if Qdrant is already running and healthy on the default ports
+        if Self::http_is_qdrant(http_port) {
+            crate::log_info!("🗄️  Qdrant is already running and healthy on grpc={}, http={}. Reusing it!", grpc_port, http_port);
+            return Ok(QdrantStartResult {
+                child: None,
+                grpc_port,
+                http_port,
+            });
+        }
+
+        // 2. If not healthy or not running, clean up any stuck/zombie Qdrant instances to release database locks & ports
+        crate::log_info!("🗄️  Cleaning up any stale/zombie Qdrant instances...");
+        #[cfg(unix)]
+        {
+            let _ = std::process::Command::new("pkill")
+                .arg("-x")
+                .arg("qdrant")
+                .output();
+        }
+        #[cfg(windows)]
+        {
+            let _ = std::process::Command::new("taskkill")
+                .arg("/F")
+                .arg("/IM")
+                .arg("qdrant.exe")
+                .output();
+        }
+        // Give the OS a moment to release file locks and sockets
+        std::thread::sleep(Duration::from_millis(500));
+
         let binary = Self::find_binary(data_dir)
             .ok_or_else(|| anyhow::anyhow!(
                 "Qdrant binary not found. It should have been downloaded on first launch."
@@ -229,6 +289,18 @@ impl QdrantService {
         for attempt in 0..max_attempts {
             let candidate_grpc = grpc_port.saturating_add(attempt);
             let candidate_http = http_port.saturating_add(attempt);
+
+            let grpc_free = std::net::TcpListener::bind(("127.0.0.1", candidate_grpc)).is_ok();
+            let http_free = std::net::TcpListener::bind(("127.0.0.1", candidate_http)).is_ok();
+
+            if !grpc_free || !http_free {
+                errors.push(format!(
+                    "ports in use: grpc_free={} (port={}), http_free={} (port={})",
+                    grpc_free, candidate_grpc, http_free, candidate_http
+                ));
+                continue;
+            }
+
             crate::log_info!(
                 "🗄️  Qdrant port attempt {}/{} | grpc={} http={}",
                 attempt + 1,
@@ -258,7 +330,7 @@ impl QdrantService {
                         crate::log_info!("🧭 Qdrant dashboard: http://127.0.0.1:{}/dashboard", candidate_http);
                     }
                     return Ok(QdrantStartResult {
-                        child,
+                        child: Some(child),
                         grpc_port: candidate_grpc,
                         http_port: candidate_http,
                     });
@@ -282,11 +354,32 @@ impl QdrantService {
 
     pub async fn connect_client(grpc_port: u16) -> Result<Qdrant> {
         let url = format!("http://127.0.0.1:{}", grpc_port);
-        let client = Qdrant::from_url(&url)
-            .timeout(Duration::from_secs(10))
-            .build()
-            .with_context(|| format!("Failed to connect Qdrant client at {}", url))?;
-        crate::log_info!("✅ Qdrant client connected: {}", url);
+        // We set a short default timeout to avoid hanging the init process
+        let mut config = Qdrant::from_url(&url);
+        config.timeout = Duration::from_secs(10);
+        config.check_compatibility = false;
+        let client = config.build()
+            .with_context(|| format!("Failed to construct Qdrant client at {}", url))?;
+
+        let mut attempts = 0;
+        let max_attempts = 15;
+        loop {
+            // Ping Qdrant with a very short 1-second timeout so we don't hang if the gRPC port is open but unresponsive
+            let ping = tokio::time::timeout(Duration::from_secs(1), async {
+                client.health_check().await.is_ok() || client.list_collections().await.is_ok()
+            }).await;
+
+            if let Ok(true) = ping {
+                break;
+            }
+            attempts += 1;
+            if attempts >= max_attempts {
+                anyhow::bail!("Qdrant gRPC layer not ready after {} attempts at {}", max_attempts, url);
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        crate::log_info!("✅ Qdrant client connected and fully ready: {}", url);
         Ok(client)
     }
 
@@ -295,36 +388,73 @@ impl QdrantService {
             .context("Failed to list Qdrant collections")?;
 
         let exists = collections.collections.iter().any(|c| c.name == name);
+        let mut needs_creation = !exists;
+
         if exists {
-            crate::log_info!("📋 Qdrant collection '{}' already exists", name);
-            return Ok(());
+            match client.collection_info(name).await {
+                Ok(info) => {
+                    if let Some(res) = info.result {
+                        let status_str = format!("{:?}", res.status);
+                        crate::log_info!("📋 Qdrant collection '{}' already exists, status: {}", name, status_str);
+                        if status_str.contains("Red") {
+                            crate::log_warn!("⚠️ Qdrant collection '{}' status is RED. Recreating.", name);
+                            let _ = client.delete_collection(name).await;
+                            needs_creation = true;
+                        }
+                    } else {
+                        crate::log_warn!("⚠️ Qdrant collection '{}' exists but has no result info. Recreating.", name);
+                        let _ = client.delete_collection(name).await;
+                        needs_creation = true;
+                    }
+                }
+                Err(e) => {
+                    crate::log_warn!("⚠️ Qdrant collection '{}' exists but is unhealthy ({}). Recreating.", name, e);
+                    let _ = client.delete_collection(name).await;
+                    needs_creation = true;
+                }
+            }
         }
 
-        crate::log_info!("📋 Creating Qdrant collection '{}' (dim={}, cosine, SQ int8, on-disk)", name, dim);
+        if needs_creation {
+            crate::log_info!("📋 Creating Qdrant collection '{}' (dim={}, cosine, SQ int8, on-disk)", name, dim);
 
-        let vectors_config = VectorParamsBuilder::new(dim as u64, Distance::Cosine)
-            .on_disk(true);
+            let vectors_config = VectorParamsBuilder::new(dim as u64, Distance::Cosine)
+                .on_disk(true);
 
-        client.create_collection(
-            CreateCollectionBuilder::new(name)
-                .vectors_config(vectors_config)
-                .quantization_config(
-                    ScalarQuantizationBuilder::default()
-                        .r#type(1) // 1 = Int8
-                        .always_ram(true)
-                )
-                .hnsw_config(
-                    HnswConfigDiffBuilder::default()
-                        .m(16)
-                        .ef_construct(100)
-                )
-                .optimizers_config(
-                    OptimizersConfigDiffBuilder::default()
-                        .memmap_threshold(20000)
-                )
-        ).await.context("Failed to create Qdrant collection")?;
+            let res = client.create_collection(
+                CreateCollectionBuilder::new(name)
+                    .vectors_config(vectors_config)
+                    .quantization_config(
+                        ScalarQuantizationBuilder::default()
+                            .r#type(1) // 1 = Int8
+                            .always_ram(true)
+                    )
+                    .hnsw_config(
+                        HnswConfigDiffBuilder::default()
+                            .m(16)
+                            .ef_construct(100)
+                    )
+                    .optimizers_config(
+                        OptimizersConfigDiffBuilder::default()
+                            .memmap_threshold(20000)
+                    )
+            ).await;
 
-        crate::log_info!("✅ Qdrant collection '{}' created", name);
+            match res {
+                Ok(_) => {
+                    crate::log_info!("✅ Qdrant collection '{}' created", name);
+                }
+                Err(e) => {
+                    let err_str = e.to_string();
+                    if err_str.contains("already exists") {
+                        crate::log_info!("📋 Qdrant collection '{}' was created by another task concurrently", name);
+                    } else {
+                        return Err(e).context("Failed to create Qdrant collection");
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 

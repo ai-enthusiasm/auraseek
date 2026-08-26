@@ -31,7 +31,7 @@ use crate::infrastructure::ai::vision::{YoloProcessor, DetectionRecord};
 use crate::infrastructure::ingest::{probe_video, detect_scenes, extract_frame, is_good_brightness};
 use crate::infrastructure::ingest::{IMAGE_EXTENSIONS, VIDEO_EXTENSIONS};
 use crate::shared::visualization::{
-    draw_detections, draw_faces, draw_segmentation, extract_masks, load_rgb, save_rgb,
+    draw_detections, draw_faces, load_rgb, save_rgb,
 };
 use crate::shared::{BOLD, CYAN, GREEN, MAGENTA, RESET};
 use crate::platform::paths;
@@ -179,7 +179,11 @@ fn process_video_debug(engine: &mut AuraSeekEngine, path: &Path, output_base: &s
         return Ok(());
     }
 
-    let cuts = detect_scenes(video_path, fps)?;
+    let cuts = detect_scenes(
+        video_path,
+        fps,
+        crate::core::config::AppConfig::global().video_scene_threshold,
+    )?;
     crate::log_info!("  🎬 {} scenes detected", cuts.len() + 1);
 
     let mut scenes: Vec<(u64, u64)> = Vec::new();
@@ -300,8 +304,8 @@ fn process_one(engine: &mut AuraSeekEngine, path: &Path, output_base: &str) -> R
 
     for (idx, o) in objects.iter().enumerate() {
         crate::log_info!(
-            "    obj {:02}: {CYAN}{:<14}{RESET} conf={:.2} area={}",
-            idx, o.class_name, o.conf, o.mask_area
+            "    obj {:02}: {CYAN}{:<14}{RESET} conf={:.2}",
+            idx, o.class_name, o.conf
         );
     }
 
@@ -386,15 +390,8 @@ fn process_one(engine: &mut AuraSeekEngine, path: &Path, output_base: &str) -> R
     let t = Instant::now();
     let (pixels, iw, ih) = load_rgb(img_str)?;
 
-    // Per-object mask PNGs
-    extract_masks(&objects, iw, ih, &out_dir)?;
-
-    // Per-object raw bbox crops
-    save_yolo_crops(&frame_cv, &objects, &out_dir);
-
-    // YOLO segmentation overlay
+    // YOLO bounding box overlay
     let mut px_seg = pixels.clone();
-    draw_segmentation(&mut px_seg, iw, ih, &objects, 0.35);
     draw_detections(&mut px_seg, iw, ih, &objects, FONT_PATH);
     save_rgb(px_seg, iw, ih, &format!("{out_dir}/det_seg.jpg"))?;
 

@@ -32,7 +32,6 @@ pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> Sea
         detected_objects: row.objects.iter().map(|o| DetectedObject {
             class_name: o.class_name.clone(), conf: o.conf,
             bbox: BboxInfo { x: o.bbox.x, y: o.bbox.y, w: o.bbox.w, h: o.bbox.h },
-            mask_rle: o.mask_rle.clone(),
         }).collect(),
         detected_faces: row.faces.iter().map(|f| DetectedFace {
             face_id: f.face_id.clone(), name: f.name.clone(), conf: f.conf,
@@ -51,18 +50,16 @@ pub fn row_to_search_result(row: &MediaRow, score: f32, source_dir: &str) -> Sea
 /// Read objects from media_objects table for a given media_id.
 fn read_objects(conn: &Connection, media_id: &str) -> Result<Vec<ObjectEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT class_name, conf, bbox_x, bbox_y, bbox_w, bbox_h, mask_area, mask_path, mask_rle
-         FROM media_objects WHERE media_id = ?1"
-    )?;
+        "SELECT oc.name, mo.conf, mo.bbox_x, mo.bbox_y, mo.bbox_w, mo.bbox_h
+         FROM media_objects mo
+         JOIN object_class oc ON mo.class_id = oc.id
+         WHERE mo.media_id = ?1"
+     )?;
     let rows = stmt.query_map(params![media_id], |r| {
-        let mask_rle_json: Option<String> = r.get(8)?;
         Ok(ObjectEntry {
             class_name: r.get(0)?,
             conf:       r.get(1)?,
             bbox: Bbox { x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)? },
-            mask_area:  r.get(6)?,
-            mask_path:  r.get(7)?,
-            mask_rle:   mask_rle_json.and_then(|j| serde_json::from_str(&j).ok()),
         })
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
@@ -71,8 +68,10 @@ fn read_objects(conn: &Connection, media_id: &str) -> Result<Vec<ObjectEntry>> {
 /// Read faces from media_faces table for a given media_id.
 fn read_faces(conn: &Connection, media_id: &str) -> Result<Vec<FaceEntry>> {
     let mut stmt = conn.prepare(
-        "SELECT face_id, name, conf, bbox_x, bbox_y, bbox_w, bbox_h
-         FROM media_faces WHERE media_id = ?1"
+        "SELECT p.face_id, mf.name, mf.conf, mf.bbox_x, mf.bbox_y, mf.bbox_w, mf.bbox_h
+         FROM media_faces mf
+         JOIN person p ON mf.person_id = p.id
+         WHERE mf.media_id = ?1"
     )?;
     let rows = stmt.query_map(params![media_id], |r| {
         Ok(FaceEntry {
@@ -85,8 +84,21 @@ fn read_faces(conn: &Connection, media_id: &str) -> Result<Vec<FaceEntry>> {
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+pub fn resolve_thumbnail_path(t: &str) -> String {
+    if std::path::Path::new(t).is_absolute() {
+        t.to_string()
+    } else {
+        let base_dir = crate::platform::paths::get_tauri_data_dir()
+            .unwrap_or_else(|| crate::core::config::AppConfig::global().data_dir.clone());
+        let cache_dir = base_dir.join("thumbnails");
+        cache_dir.join(t).to_string_lossy().to_string()
+    }
+}
+
 /// Assemble a MediaRow from a rusqlite Row (base media columns) + child tables.
 fn media_row_from_sqlite(r: &rusqlite::Row) -> rusqlite::Result<MediaRowBase> {
+    let thumb_raw: Option<String> = r.get("thumbnail")?;
+    let resolved_thumb = thumb_raw.map(|t| resolve_thumbnail_path(&t));
     Ok(MediaRowBase {
         id:         r.get("id")?,
         media_type: r.get("media_type")?,
@@ -104,7 +116,7 @@ fn media_row_from_sqlite(r: &rusqlite::Row) -> rusqlite::Result<MediaRowBase> {
         favorite:   r.get::<_, i32>("favorite")? != 0,
         is_hidden:  r.get::<_, i32>("is_hidden")? != 0,
         deleted_at: r.get("deleted_at")?,
-        thumbnail:  r.get("thumbnail")?,
+        thumbnail:  resolved_thumb,
     })
 }
 
@@ -150,17 +162,87 @@ pub fn read_media_row(conn: &Connection, media_id: &str) -> Result<Option<MediaR
     }
 }
 
-/// Execute a SQL query that returns media rows, and read full MediaRow for each
-/// (including objects/faces from child tables).
 pub fn read_media_rows_from_query(conn: &Connection, sql: &str, params: &[&dyn rusqlite::ToSql]) -> Result<Vec<MediaRow>> {
     let mut stmt = conn.prepare(sql)?;
     let bases: Vec<MediaRowBase> = stmt.query_map(params, media_row_from_sqlite)?
         .filter_map(|r| r.ok())
         .collect();
+
+    if bases.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut objects_map: HashMap<String, Vec<ObjectEntry>> = HashMap::new();
+    let mut faces_map: HashMap<String, Vec<FaceEntry>> = HashMap::new();
+
+    // Batch-query objects and faces in chunks of 500 to stay within SQL parameter limits
+    for chunk in bases.chunks(500) {
+        let ids: Vec<String> = chunk.iter().map(|b| b.id.clone()).collect();
+        let placeholders = ids.iter().enumerate().map(|(i, _)| format!("?{}", i + 1)).collect::<Vec<_>>().join(",");
+
+        let query_sql = format!(
+            "SELECT mo.media_id, oc.name, mo.conf, mo.bbox_x, mo.bbox_y, mo.bbox_w, mo.bbox_h 
+             FROM media_objects mo
+             JOIN object_class oc ON mo.class_id = oc.id
+             WHERE mo.media_id IN ({})",
+            placeholders
+        );
+        let mut stmt_objs = conn.prepare(&query_sql)?;
+        let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+        let rows = stmt_objs.query_map(&*params_vec, |r| {
+            let media_id: String = r.get(0)?;
+            Ok((
+                media_id,
+                ObjectEntry {
+                    class_name: r.get(1)?,
+                    conf: r.get(2)?,
+                    bbox: Bbox {
+                        x: r.get(3)?,
+                        y: r.get(4)?,
+                        w: r.get(5)?,
+                        h: r.get(6)?,
+                    },
+                }
+            ))
+        })?;
+        for r in rows.filter_map(|r| r.ok()) {
+            objects_map.entry(r.0).or_default().push(r.1);
+        }
+
+        let query_sql_faces = format!(
+            "SELECT mf.media_id, p.face_id, mf.name, mf.conf, mf.bbox_x, mf.bbox_y, mf.bbox_w, mf.bbox_h 
+             FROM media_faces mf
+             JOIN person p ON mf.person_id = p.id
+             WHERE mf.media_id IN ({})",
+            placeholders
+        );
+        let mut stmt_faces = conn.prepare(&query_sql_faces)?;
+        let rows_faces = stmt_faces.query_map(&*params_vec, |r| {
+            let media_id: String = r.get(0)?;
+            Ok((
+                media_id,
+                FaceEntry {
+                    face_id: r.get(1)?,
+                    name: r.get(2)?,
+                    conf: r.get(3)?,
+                    bbox: Bbox {
+                        x: r.get(4)?,
+                        y: r.get(5)?,
+                        w: r.get(6)?,
+                        h: r.get(7)?,
+                    },
+                }
+            ))
+        })?;
+        for r in rows_faces.filter_map(|r| r.ok()) {
+            faces_map.entry(r.0).or_default().push(r.1);
+        }
+    }
+
     let mut rows = Vec::with_capacity(bases.len());
     for b in bases {
-        let objects = read_objects(conn, &b.id)?;
-        let faces = read_faces(conn, &b.id)?;
+        let objects = objects_map.remove(&b.id).unwrap_or_default();
+        let faces = faces_map.remove(&b.id).unwrap_or_default();
         rows.push(base_to_media_row(b, objects, faces));
     }
     Ok(rows)
@@ -198,7 +280,6 @@ impl DbOperations {
                 detected_objects: row.objects.iter().map(|o| DetectedObject {
                     class_name: o.class_name.clone(), conf: o.conf,
                     bbox: BboxInfo { x: o.bbox.x, y: o.bbox.y, w: o.bbox.w, h: o.bbox.h },
-                    mask_rle: o.mask_rle.clone(),
                 }).collect(),
                 detected_faces: row.faces.iter().map(|f| DetectedFace {
                     face_id: f.face_id.clone(), name: f.name.clone(), conf: f.conf,

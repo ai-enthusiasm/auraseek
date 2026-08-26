@@ -1,14 +1,15 @@
 import type { Photo } from "@/types/photo.type";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Calendar, Smartphone, HardDrive, Tag, Plus, UserPlus, Image as ImageIcon } from "lucide-react";
+import { Calendar, Smartphone, HardDrive, Tag, UserPlus, Image as ImageIcon } from "lucide-react";
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
 import { AuraSeekApi } from "@/lib/api";
+import { AddToAlbumDialog } from "@/components/ui/AddToAlbumDialog";
 
 export function PhotoInfoPanel({ photo }: { photo: Photo }) {
   const [description, setDescription] = useState("");
   const [deviceName, setDeviceName] = useState<string | null>(null);
   const [effectiveSizeBytes, setEffectiveSizeBytes] = useState<number>(photo.sizeBytes || 0);
+  const [showAddToAlbum, setShowAddToAlbum] = useState(false);
 
   const takenDate = new Date(photo.takenAt);
   const formattedDate = new Intl.DateTimeFormat("vi-VN", { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(takenDate);
@@ -99,9 +100,6 @@ export function PhotoInfoPanel({ photo }: { photo: Photo }) {
                   <span className="text-xs">{p.name}</span>
                 </div>
               ))}
-              <Button variant="ghost" size="icon" className="w-7 h-7 rounded-full bg-muted/40 hover:bg-muted/80">
-                <Plus className="w-4 h-4 text-muted-foreground" />
-              </Button>
             </div>
           </div>
         </div>
@@ -112,12 +110,11 @@ export function PhotoInfoPanel({ photo }: { photo: Photo }) {
           <div className="flex-1 flex flex-col gap-2">
             <div className="text-sm font-medium">Nhãn đối tượng (AI)</div>
             <div className="flex flex-wrap gap-1.5 mt-1">
-              {photo.labels?.map(l => (
+              {Array.from(new Set(photo.labels || [])).map(l => (
                 <span key={l} className="bg-muted px-2.5 py-1 rounded-md text-xs hover:bg-muted/80 cursor-pointer border border-transparent hover:border-border/30 transition-colors">
                   {l}
                 </span>
               ))}
-              <span className="text-xs text-primary cursor-pointer hover:underline py-1 ml-1">Thêm nhãn</span>
             </div>
           </div>
         </div>
@@ -126,9 +123,17 @@ export function PhotoInfoPanel({ photo }: { photo: Photo }) {
         <div className="flex gap-4 items-start px-3">
           <ImageIcon className="w-5 h-5 text-muted-foreground shrink-0 mt-0.5" />
           <div className="flex-1">
-            <div className="text-sm text-primary cursor-pointer hover:underline">Thêm vào album</div>
+            <div className="text-sm text-primary cursor-pointer hover:underline" onClick={() => setShowAddToAlbum(true)}>
+              Thêm vào album
+            </div>
           </div>
         </div>
+
+        <AddToAlbumDialog 
+          isOpen={showAddToAlbum} 
+          onClose={() => setShowAddToAlbum(false)} 
+          mediaIds={[photo.id]} 
+        />
 
         {/* Storage Details */}
         <div className="flex gap-4 items-start px-3 pt-4 border-t border-border/10">

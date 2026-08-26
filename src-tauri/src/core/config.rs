@@ -1,7 +1,76 @@
 use std::path::PathBuf;
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 static GLOBAL_CONFIG: OnceLock<AppConfig> = OnceLock::new();
+
+pub const MODEL_VISION_REL: &str = "models/vision_aura.onnx";
+pub const MODEL_TEXT_REL: &str = "models/text_aura.onnx";
+pub const MODEL_YOLO_REL: &str = "models/yolo26s.onnx";
+pub const MODEL_SCRFD_REL: &str = "models/scrfd_2.5g_bnkps.onnx";
+pub const MODEL_ARCFACE_REL: &str = "models/arcface_resnet50.onnx";
+pub const TOKENIZER_VOCAB_REL: &str = "tokenizer/vocab.txt";
+pub const TOKENIZER_BPE_REL: &str = "tokenizer/bpe.codes";
+pub const FONT_DEJAVU_REL: &str = "fonts/DejaVuSans.ttf";
+
+pub const MODEL_VISION_NAME: &str = "vision_aura.onnx";
+pub const MODEL_TEXT_NAME: &str = "text_aura.onnx";
+pub const MODEL_YOLO_NAME: &str = "yolo26s.onnx";
+pub const MODEL_SCRFD_NAME: &str = "scrfd_2.5g_bnkps.onnx";
+pub const MODEL_ARCFACE_NAME: &str = "arcface_resnet50.onnx";
+pub const TOKENIZER_VOCAB_NAME: &str = "vocab.txt";
+pub const TOKENIZER_BPE_NAME: &str = "bpe.codes";
+pub const FONT_DEJAVU_NAME: &str = "DejaVuSans.ttf";
+
+pub const AI_ASSETS_BASE_URL: &str = "https://github.com/ai-enthusiasm/auraseek/releases/download/v1.0.0";
+
+pub const AI_ASSETS: &[(&str, &str)] = &[
+    (MODEL_TEXT_NAME, MODEL_TEXT_REL),
+    (MODEL_VISION_NAME, MODEL_VISION_REL),
+    (MODEL_ARCFACE_NAME, MODEL_ARCFACE_REL),
+    (MODEL_SCRFD_NAME, MODEL_SCRFD_REL),
+    (MODEL_YOLO_NAME, MODEL_YOLO_REL),
+    (TOKENIZER_BPE_NAME, TOKENIZER_BPE_REL),
+    (TOKENIZER_VOCAB_NAME, TOKENIZER_VOCAB_REL),
+    (FONT_DEJAVU_NAME, FONT_DEJAVU_REL),
+];
+
+pub const QDRANT_FACE_COLLECTION: &str = "face_embeddings";
+
+/// Global runtime thread count — may be lowered at runtime if RAM pressure detected.
+pub static RUNTIME_NUM_THREADS: AtomicUsize = AtomicUsize::new(1);
+
+pub fn compute_safe_threads() -> usize {
+    let cpu_count = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(2);
+    let cpu_based = (cpu_count / 2).max(1).min(8); // cap at 8 threads max
+
+    // Check available RAM
+    let ram_threads = {
+        use sysinfo::System;
+        let mut sys = System::new();
+        sys.refresh_memory();
+        let _total_mb = sys.total_memory() / (1024 * 1024);
+        let avail_mb = sys.available_memory() / (1024 * 1024);
+
+        // Limit RAM allocation to 50% of available RAM
+        let allowed_ram_mb = (avail_mb as f64 * 0.5) as u64;
+
+        // Base memory is ~600MB, each extra thread occupies ~150MB of buffers
+        if allowed_ram_mb <= 600 {
+            1
+        } else {
+            let extra_ram = allowed_ram_mb - 600;
+            let calculated_threads = 1 + (extra_ram / 150) as usize;
+            calculated_threads.min(cpu_based)
+        }
+    };
+
+    let result = cpu_based.min(ram_threads).max(1);
+    crate::log_info!("🧵 Computed safe threads: {} (cpu_based={}, ram_based={})", result, cpu_based, ram_threads);
+    result
+}
 
 #[derive(Debug, Clone)]
 pub enum DevicePreference {
@@ -25,11 +94,36 @@ pub struct AppConfig {
 
     pub face_detection_threshold: f32,
     pub face_identity_threshold: f32,
-    pub yolo_confidence: f32,
+    /// YuNet post-NMS IoU overlap threshold (OpenCV-style suppression).
+    pub face_nms_iou_threshold: f32,
+    /// Max face candidates kept (by score) before NMS; must be ≥ 1.
+    pub face_top_k: usize,
+    pub yolo_score_high: f32,
+    pub yolo_score_min: f32,
     pub yolo_iou: f32,
     pub search_threshold: f32,
     pub search_limit: usize,
     pub max_batch_size: usize,
+
+    /// `ffmpeg` scene filter: `select='gt(scene, THRESHOLD)'` (0.0–1.0).
+    pub video_scene_threshold: f64,
+
+    /// Minimum similarity for “near duplicate”: Qdrant `score_threshold` in duplicate finder,
+    /// and cosine threshold when skipping redundant consecutive `video_frame` embeddings during ingest.
+    pub duplicate_score_threshold: f32,
+    /// Page size for Qdrant scroll when loading embeddings for duplicate detection.
+    pub duplicate_scroll_page_size: usize,
+
+    /// BPE text-query token cap (must match model max positions where applicable).
+    pub text_query_max_len: usize,
+
+    pub search_sql_limit_object_filter: usize,
+    pub search_sql_limit_face_filter: usize,
+    pub search_sql_limit_filter_only: usize,
+
+    pub fs_watcher_debounce_ms: u64,
+    /// Minimum free RAM % (`available_ram_percent`) required before watcher ingests a batch.
+    pub fs_watcher_min_ram_percent: f32,
 
     pub device: DevicePreference,
     pub num_threads: usize,
@@ -45,24 +139,41 @@ impl Default for AppConfig {
         Self {
             model_dir: data_dir.clone(),
             sqlite_path: data_dir.join("auraseek.sqlite3"),
-            qdrant_port: 6334,
-            qdrant_http_port: 6333,
-            qdrant_dashboard_enabled: false,
+            qdrant_port: 6354,
+            qdrant_http_port: 6353,
+            qdrant_dashboard_enabled: true,
             qdrant_storage_dir: data_dir.join("qdrant_storage"),
             qdrant_collection: "media_embeddings".to_string(),
             data_dir,
             log_path,
 
-            face_detection_threshold: 0.93,
-            face_identity_threshold: 0.33,
-            yolo_confidence: 0.25,
-            yolo_iou: 0.45,
-            search_threshold: 0.256,
+            face_detection_threshold: 0.5,
+            face_identity_threshold: 0.55,
+            face_nms_iou_threshold: 0.45,
+            face_top_k: 5000,
+            yolo_score_high: 0.58,
+            yolo_score_min: 0.33,
+            yolo_iou: 0.9,
+            search_threshold: 0.51,
             search_limit: 10000,
             max_batch_size: 1,
 
+            video_scene_threshold: 0.11,
+
+            duplicate_score_threshold: 0.98,
+            duplicate_scroll_page_size: 256,
+
+            text_query_max_len: 64,
+
+            search_sql_limit_object_filter: 100,
+            search_sql_limit_face_filter: 100,
+            search_sql_limit_filter_only: 200,
+
+            fs_watcher_debounce_ms: 2000,
+            fs_watcher_min_ram_percent: 10.0,
+
             device: DevicePreference::Auto,
-            num_threads: 1,
+            num_threads: 0, // 0 = auto-detect at runtime via compute_safe_threads()
 
             debug: false,
         }
@@ -130,6 +241,19 @@ fn clamp_f32(val: f32, min: f32, max: f32, name: &str) -> f32 {
     }
 }
 
+fn clamp_f64(val: f64, min: f64, max: f64, name: &str) -> f64 {
+    if val < min || val > max {
+        let clamped = val.clamp(min, max);
+        eprintln!(
+            "[config] {} value {:.4} out of range [{:.2}, {:.2}], clamped to {:.4}",
+            name, val, min, max, clamped
+        );
+        clamped
+    } else {
+        val
+    }
+}
+
 impl AppConfig {
     pub fn from_env() -> Self {
         let defaults = Self::default();
@@ -171,13 +295,29 @@ impl AppConfig {
             env_or("AURASEEK_FACE_DETECTION_THRESHOLD", defaults.face_detection_threshold),
             0.0, 1.0, "AURASEEK_FACE_DETECTION_THRESHOLD",
         );
-        let face_identity_threshold = clamp_f32(
-            env_or("AURASEEK_FACE_IDENTITY_THRESHOLD", defaults.face_identity_threshold),
-            0.0, 1.0, "AURASEEK_FACE_IDENTITY_THRESHOLD",
+        // Legacy alias: AURASEEK_FACE_THRESHOLD (docs / older .env) if IDENTITY not set.
+        let face_identity_threshold = {
+            let primary = std::env::var("AURASEEK_FACE_IDENTITY_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            let legacy = std::env::var("AURASEEK_FACE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            let raw = primary.or(legacy).unwrap_or(defaults.face_identity_threshold);
+            clamp_f32(raw, 0.0, 1.0, "AURASEEK_FACE_IDENTITY_THRESHOLD")
+        };
+        let face_nms_iou_threshold = clamp_f32(
+            env_or("AURASEEK_FACE_NMS_IOU_THRESHOLD", defaults.face_nms_iou_threshold),
+            0.0, 1.0, "AURASEEK_FACE_NMS_IOU_THRESHOLD",
         );
-        let yolo_confidence = clamp_f32(
-            env_or("AURASEEK_YOLO_CONFIDENCE", defaults.yolo_confidence),
-            0.0, 1.0, "AURASEEK_YOLO_CONFIDENCE",
+        let face_top_k = env_or("AURASEEK_FACE_TOP_K", defaults.face_top_k).max(1);
+        let yolo_score_high = clamp_f32(
+            env_or("AURASEEK_YOLO_SCORE_HIGH", defaults.yolo_score_high),
+            0.0, 1.0, "AURASEEK_YOLO_SCORE_HIGH",
+        );
+        let yolo_score_min = clamp_f32(
+            env_or("AURASEEK_YOLO_SCORE_MIN", defaults.yolo_score_min),
+            0.0, 1.0, "AURASEEK_YOLO_SCORE_MIN",
         );
         let yolo_iou = clamp_f32(
             env_or("AURASEEK_YOLO_IOU", defaults.yolo_iou),
@@ -196,8 +336,12 @@ impl AppConfig {
             _ => DevicePreference::Auto,
         };
 
-        let num_threads = env_or("AURASEEK_NUM_THREADS", defaults.num_threads)
-            .max(1);
+        let raw_threads = env_or("AURASEEK_NUM_THREADS", defaults.num_threads);
+        let num_threads = if raw_threads == 0 {
+            compute_safe_threads()
+        } else {
+            raw_threads.max(1)
+        };
 
         let search_threshold = clamp_f32(
             env_or("AURASEEK_SEARCH_THRESHOLD", defaults.search_threshold),
@@ -205,6 +349,55 @@ impl AppConfig {
         );
         let search_limit = env_or("AURASEEK_SEARCH_LIMIT", defaults.search_limit)
             .max(1);
+
+        let video_scene_threshold = clamp_f64(
+            env_or("AURASEEK_VIDEO_SCENE_THRESHOLD", defaults.video_scene_threshold),
+            0.0,
+            1.0,
+            "AURASEEK_VIDEO_SCENE_THRESHOLD",
+        );
+
+        let duplicate_score_threshold = {
+            let primary = std::env::var("AURASEEK_DUPLICATE_SCORE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            // Legacy: same semantics were split into a separate video-only env.
+            let legacy_video = std::env::var("AURASEEK_VIDEO_FRAME_DEDUP_COSINE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<f32>().ok());
+            let raw = primary
+                .or(legacy_video)
+                .unwrap_or(defaults.duplicate_score_threshold);
+            clamp_f32(raw, 0.0, 1.0, "AURASEEK_DUPLICATE_SCORE_THRESHOLD")
+        };
+        let duplicate_scroll_page_size =
+            env_or("AURASEEK_DUPLICATE_SCROLL_PAGE_SIZE", defaults.duplicate_scroll_page_size).max(1);
+
+        let text_query_max_len = env_or("AURASEEK_TEXT_QUERY_MAX_LEN", defaults.text_query_max_len).max(8);
+
+        let search_sql_limit_object_filter = env_or(
+            "AURASEEK_SEARCH_SQL_LIMIT_OBJECT_FILTER",
+            defaults.search_sql_limit_object_filter,
+        )
+        .max(1);
+        let search_sql_limit_face_filter = env_or(
+            "AURASEEK_SEARCH_SQL_LIMIT_FACE_FILTER",
+            defaults.search_sql_limit_face_filter,
+        )
+        .max(1);
+        let search_sql_limit_filter_only = env_or(
+            "AURASEEK_SEARCH_SQL_LIMIT_FILTER_ONLY",
+            defaults.search_sql_limit_filter_only,
+        )
+        .max(1);
+
+        let fs_watcher_debounce_ms = env_or("AURASEEK_FS_WATCHER_DEBOUNCE_MS", defaults.fs_watcher_debounce_ms).max(1);
+        let fs_watcher_min_ram_percent = clamp_f32(
+            env_or("AURASEEK_FS_WATCHER_MIN_RAM_PERCENT", defaults.fs_watcher_min_ram_percent),
+            0.0,
+            100.0,
+            "AURASEEK_FS_WATCHER_MIN_RAM_PERCENT",
+        );
 
         let debug = env_or("AURASEEK_DEBUG", defaults.debug);
 
@@ -220,11 +413,23 @@ impl AppConfig {
             qdrant_collection,
             face_detection_threshold,
             face_identity_threshold,
-            yolo_confidence,
+            face_nms_iou_threshold,
+            face_top_k,
+            yolo_score_high,
+            yolo_score_min,
             yolo_iou,
             search_threshold,
             search_limit,
             max_batch_size,
+            video_scene_threshold,
+            duplicate_score_threshold,
+            duplicate_scroll_page_size,
+            text_query_max_len,
+            search_sql_limit_object_filter,
+            search_sql_limit_face_filter,
+            search_sql_limit_filter_only,
+            fs_watcher_debounce_ms,
+            fs_watcher_min_ram_percent,
             device,
             num_threads,
             debug,
@@ -250,10 +455,34 @@ impl AppConfig {
         crate::log_info!("   Qdrant store:  {}", self.qdrant_storage_dir.display());
         crate::log_info!("   Device:        {:?}", self.device);
         crate::log_info!("   Threads:       {}", self.num_threads);
-        crate::log_info!("   Face (Det/Id): {:.4} / {:.4}", self.face_detection_threshold, self.face_identity_threshold);
+        crate::log_info!(
+            "   Face (Det/Id/NMS/topK): {:.4} / {:.4} / {:.4} / {}",
+            self.face_detection_threshold,
+            self.face_identity_threshold,
+            self.face_nms_iou_threshold,
+            self.face_top_k
+        );
         crate::log_info!("   Search:        {:.4} (limit: {})", self.search_threshold, self.search_limit);
-        crate::log_info!("   YOLO (Conf/IOU): {:.4} / {:.4}", self.yolo_confidence, self.yolo_iou);
+        crate::log_info!("   YOLO (ScoreHigh/ScoreMin/IOU): {:.4} / {:.4} / {:.4}", self.yolo_score_high, self.yolo_score_min, self.yolo_iou);
         crate::log_info!("   Max Batch:     {}", self.max_batch_size);
+        crate::log_info!(
+            "   Video scene: {:.4} | near-dup similarity {:.4} (video dedup + Qdrant) | scroll {}",
+            self.video_scene_threshold,
+            self.duplicate_score_threshold,
+            self.duplicate_scroll_page_size
+        );
+        crate::log_info!("   Text query max len: {}", self.text_query_max_len);
+        crate::log_info!(
+            "   SQL limits (obj/face/filter): {}/{}/{}",
+            self.search_sql_limit_object_filter,
+            self.search_sql_limit_face_filter,
+            self.search_sql_limit_filter_only
+        );
+        crate::log_info!(
+            "   FS watcher:    debounce {} ms | min RAM {:.1}%",
+            self.fs_watcher_debounce_ms,
+            self.fs_watcher_min_ram_percent
+        );
         crate::log_info!("   Debug Mode:    {}", self.debug);
     }
 }

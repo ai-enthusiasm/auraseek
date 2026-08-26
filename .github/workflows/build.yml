@@ -29,7 +29,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: yarn
 
       - name: Setup Rust
@@ -39,9 +39,101 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: "./src-tauri -> target"
+          # Invalidate when native OpenCV major/minor changes (linker + opencv-sys).
+          shared-key: opencv-4.6.0-msvc
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
+
+      - name: Cache OpenCV prebuilt
+        uses: actions/cache@v4
+        with:
+          path: opencv
+          # Bump when install script changes (avoids restoring broken partial trees).
+          key: opencv-4.6.0-windows-${{ runner.os }}-v4-opencv46
+
+      # opencv-rust needs headers + import libraries (.lib), not only DLLs.
+      # Official Windows pack: https://github.com/opencv/opencv/releases
+      - name: Install OpenCV prebuilt (Windows / MSVC)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $ws = $env:GITHUB_WORKSPACE
+          $top = Join-Path $ws "opencv"
+
+          function Get-OpenCvBuildDir([string]$baseTop) {
+            $c1 = Join-Path $baseTop "build"
+            if (Test-Path (Join-Path $c1 "include")) { return $c1 }
+            $c2 = Join-Path $baseTop "opencv\build"
+            if (Test-Path (Join-Path $c2 "include")) { return $c2 }
+            return $null
+          }
+
+          function Test-OpenCvOk([string]$buildDir) {
+            if ([string]::IsNullOrEmpty($buildDir)) { return $false }
+            $x = Join-Path $buildDir "x64"
+            return (Test-Path $x)
+          }
+
+          $build = Get-OpenCvBuildDir $top
+          if (-not (Test-OpenCvOk $build)) {
+            Write-Host "OpenCV missing or incomplete under $top — removing and re-extracting into repo root: $ws"
+            if (Test-Path $top) { Remove-Item -LiteralPath $top -Recurse -Force }
+            $ver = "4.6.0"
+            # OpenCV 4.6 Windows SFX is named vc14_vc15, not opencv-{ver}-windows.exe
+            # (that naming appears on newer releases, e.g. 4.10+).
+            $installer = "opencv-$ver-vc14_vc15.exe"
+            $setup = Join-Path $env:RUNNER_TEMP $installer
+            $url = "https://github.com/opencv/opencv/releases/download/$ver/$installer"
+            Write-Host "Downloading $url ..."
+            Invoke-WebRequest -Uri $url -OutFile $setup
+            $sig = Get-Content -LiteralPath $setup -AsByteStream -TotalCount 2 -ErrorAction Stop
+            if ($sig.Count -lt 2 -or $sig[0] -ne 0x4D -or $sig[1] -ne 0x5A) {
+              throw "Download is not a valid PE executable (wrong URL / 404 HTML?). URL=$url"
+            }
+            # SFX always creates .\opencv\ under the -o directory; -o must be repo root, NOT ...\opencv
+            Write-Host "Extracting with -o$ws (creates $top\...)"
+            $p = Start-Process -FilePath $setup -ArgumentList "-o$ws","-y" -Wait -PassThru -NoNewWindow
+            Remove-Item $setup -Force -ErrorAction SilentlyContinue
+            if (($null -ne $p.ExitCode) -and ($p.ExitCode -ne 0)) { throw "OpenCV installer exit code $($p.ExitCode)" }
+            $build = Get-OpenCvBuildDir $top
+          }
+
+          if (-not (Test-OpenCvOk $build)) {
+            Write-Host "--- Listing $top ---"
+            if (Test-Path $top) { Get-ChildItem -LiteralPath $top -Recurse -Depth 3 -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName } }
+            Write-Host "--- Listing $ws (top level) ---"
+            Get-ChildItem -LiteralPath $ws -ErrorAction SilentlyContinue | ForEach-Object { $_.Name }
+            throw "OpenCV layout invalid: expected ...\opencv\build\x64 (build dir resolved to '$build')."
+          }
+
+          $x64 = Join-Path $build "x64"
+          $vc = Get-ChildItem -Path $x64 -Directory | Sort-Object { $_.Name } -Descending | Select-Object -First 1
+          $libDir = Join-Path $vc.FullName "lib"
+          $binDir = Join-Path $vc.FullName "bin"
+          $incDir = Join-Path $build "include"
+          if (-not (Test-Path $libDir) -or -not (Test-Path $incDir)) {
+            throw "OpenCV layout unexpected: lib=$libDir include=$incDir"
+          }
+          $world = Get-ChildItem -Path $libDir -Filter "opencv_world*.lib" | Select-Object -First 1
+          if ($null -eq $world) { throw "No opencv_world*.lib under $libDir" }
+          $linkLib = $world.BaseName
+          Write-Host "Using OpenCV lib: $($world.Name) include=$incDir"
+          "OPENCV_INCLUDE_PATHS=$incDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OPENCV_LINK_PATHS=$libDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "OPENCV_LINK_LIBS=$linkLib" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # Skip broken probes (no pkg-config / OpenCVConfig on runner); use env paths only.
+          "OPENCV_DISABLE_PROBES=pkg_config,cmake,vcpkg_cmake,vcpkg" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          # So loaders can find DLLs if anything runs OpenCV during the build.
+          $binDir | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          # Bundle the same OpenCV runtime the binary was linked against (see
+          # `tauri.windows.conf.json` + `ensure_native_libs`). Without this, the
+          # MSI can ship without e.g. opencv_world460.dll while the exe expects it.
+          $bundleLibs = Join-Path $ws "src-tauri\libs\windows"
+          New-Item -ItemType Directory -Force -Path $bundleLibs | Out-Null
+          Copy-Item -Path (Join-Path $binDir "opencv*.dll") -Destination $bundleLibs -Force
+          Write-Host "Staged OpenCV runtime DLLs for Tauri bundle:"
+          Get-ChildItem $bundleLibs | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Build Windows app
         run: yarn tauri:build:windows
@@ -66,7 +158,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: yarn
 
       - name: Setup Rust
@@ -79,6 +171,13 @@ jobs:
 
       - name: Install frontend dependencies
         run: yarn install --frozen-lockfile
+
+      # opencv-rust build.rs loads libclang.dylib; Xcode CLI tools alone are not enough on GHA.
+      - name: Install LLVM + OpenCV (macOS)
+        run: |
+          brew install llvm opencv pkg-config
+          echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
+          echo "PATH=$(brew --prefix llvm)/bin:$PATH" >> "$GITHUB_ENV"
 
       - name: Build macOS app
         run: yarn tauri:build:macos
@@ -94,7 +193,9 @@ jobs:
 
   build-linux:
     name: Build Linux
-    runs-on: ubuntu-22.04
+    # ubuntu-22.04 ships glibc 2.35; bundled ONNX Runtime (ort/ort-sys) links
+    # against __isoc23_* (strtol family) which require glibc >= 2.38.
+    runs-on: ubuntu-24.04
     if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
     steps:
       - name: Checkout repository
@@ -103,7 +204,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "lts/*"
+          node-version: "22"
           cache: yarn
 
       - name: Setup Rust
@@ -116,7 +217,20 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            clang \
+            libclang-dev \
+            llvm-dev \
+            libopencv-dev \
+            pkg-config
+
+      # opencv-rust build.rs needs libclang.so (clang-sys).
+      - name: Set LIBCLANG_PATH (Linux)
+        run: |
+          echo "LIBCLANG_PATH=/usr/lib/x86_64-linux-gnu" >> "$GITHUB_ENV"
+          if command -v llvm-config >/dev/null 2>&1; then
+            echo "LLVM_CONFIG_PATH=$(command -v llvm-config)" >> "$GITHUB_ENV"
+          fi
 
       - name: Cache Rust build
         uses: Swatinem/rust-cache@v2
@@ -136,4 +250,29 @@ jobs:
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/appimage/*.AppImage
+          if-no-files-found: error
+
+  build-flatpak:
+    name: Build Flatpak (Linux)
+    runs-on: ubuntu-latest
+    if: github.event_name != 'workflow_dispatch' || inputs.platform == 'all' || inputs.platform == 'linux'
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-47
+      options: --privileged
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: auraseek.flatpak
+          manifest-path: com.aienthusiasm.auraseek.json
+          run-tests: false
+
+      - name: Upload Flatpak Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: auraseek-flatpak
+          path: auraseek.flatpak
           if-no-files-found: error

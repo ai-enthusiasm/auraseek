@@ -19,10 +19,7 @@ impl DbOperations {
             "SELECT id, processed FROM media
              WHERE file_name = ?1
                AND file_size = ?2
-               AND (
-                    (meta_modified_at IS NULL AND ?3 IS NULL)
-                    OR meta_modified_at = ?3
-               )
+               AND meta_modified_at IS ?3
              LIMIT 1"
         )?;
         use rusqlite::OptionalExtension;
@@ -125,48 +122,104 @@ impl DbOperations {
         objects: Vec<ObjectEntry>,
         faces: Vec<FaceEntry>,
         thumbnail: Option<String>,
+        img_width: Option<u32>,
+        img_height: Option<u32>,
     ) -> Result<()> {
-        let conn = db.conn();
+        let mut conn = db.conn();
+        let tx = conn.transaction()?;
 
-        conn.execute("DELETE FROM media_objects WHERE media_id = ?1", params![media_id])?;
-        conn.execute("DELETE FROM media_faces WHERE media_id = ?1", params![media_id])?;
+        tx.execute("DELETE FROM media_objects WHERE media_id = ?1", params![media_id])?;
+        tx.execute("DELETE FROM media_faces WHERE media_id = ?1", params![media_id])?;
 
         for obj in &objects {
-            let mask_rle_json: Option<String> = obj.mask_rle.as_ref().map(|v| serde_json::to_string(v).unwrap_or_default());
-            conn.execute(
-                "INSERT INTO media_objects (media_id, class_name, conf, bbox_x, bbox_y, bbox_w, bbox_h, mask_area, mask_path, mask_rle)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            // First, look up or insert class_name into object_class table
+            let class_id: i64 = match tx.query_row(
+                "SELECT id FROM object_class WHERE name = ?1",
+                params![obj.class_name],
+                |r| r.get(0),
+            ) {
+                Ok(id) => id,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    tx.execute(
+                        "INSERT INTO object_class (name) VALUES (?1)",
+                        params![obj.class_name],
+                    )?;
+                    tx.last_insert_rowid()
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            tx.execute(
+                "INSERT INTO media_objects (media_id, class_id, conf, bbox_x, bbox_y, bbox_w, bbox_h)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![
-                    media_id, obj.class_name, obj.conf,
+                    media_id, class_id, obj.conf,
                     obj.bbox.x, obj.bbox.y, obj.bbox.w, obj.bbox.h,
-                    obj.mask_area, obj.mask_path, mask_rle_json,
                 ],
             )?;
         }
 
         for face in &faces {
-            conn.execute(
-                "INSERT INTO media_faces (media_id, face_id, name, conf, bbox_x, bbox_y, bbox_w, bbox_h)
+            // Lookup person_id from person table using face_id
+            let person_id: i64 = match tx.query_row(
+                "SELECT id FROM person WHERE face_id = ?1",
+                params![face.face_id],
+                |r| r.get(0),
+            ) {
+                Ok(id) => id,
+                Err(rusqlite::Error::QueryReturnedNoRows) => {
+                    tx.execute(
+                        "INSERT INTO person (face_id, name, conf, face_bbox_x, face_bbox_y, face_bbox_w, face_bbox_h)
+                         VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                        params![
+                            face.face_id, face.name, face.conf,
+                            face.bbox.x, face.bbox.y, face.bbox.w, face.bbox.h,
+                        ],
+                    )?;
+                    tx.last_insert_rowid()
+                }
+                Err(e) => return Err(e.into()),
+            };
+
+            tx.execute(
+                "INSERT INTO media_faces (media_id, person_id, name, conf, bbox_x, bbox_y, bbox_w, bbox_h)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![
-                    media_id, face.face_id, face.name, face.conf,
+                    media_id, person_id, face.name, face.conf,
                     face.bbox.x, face.bbox.y, face.bbox.w, face.bbox.h,
                 ],
             )?;
         }
 
-        if let Some(ref thumb) = thumbnail {
-            conn.execute(
-                "UPDATE media SET processed = 1, thumbnail = ?2 WHERE id = ?1",
-                params![media_id, thumb],
-            )?;
-        } else {
-            conn.execute(
-                "UPDATE media SET processed = 1 WHERE id = ?1",
-                params![media_id],
-            )?;
+        // Build SET clause: always update processed; optionally update thumbnail and dimensions
+        match (thumbnail.as_ref(), img_width, img_height) {
+            (Some(thumb), Some(w), Some(h)) => {
+                tx.execute(
+                    "UPDATE media SET processed = 1, thumbnail = ?2, meta_width = ?3, meta_height = ?4 WHERE id = ?1",
+                    params![media_id, thumb, w, h],
+                )?;
+            }
+            (Some(thumb), _, _) => {
+                tx.execute(
+                    "UPDATE media SET processed = 1, thumbnail = ?2 WHERE id = ?1",
+                    params![media_id, thumb],
+                )?;
+            }
+            (None, Some(w), Some(h)) => {
+                tx.execute(
+                    "UPDATE media SET processed = 1, meta_width = ?2, meta_height = ?3 WHERE id = ?1",
+                    params![media_id, w, h],
+                )?;
+            }
+            (None, _, _) => {
+                tx.execute(
+                    "UPDATE media SET processed = 1 WHERE id = ?1",
+                    params![media_id],
+                )?;
+            }
         }
 
+        tx.commit()?;
         Ok(())
     }
 
@@ -238,12 +291,63 @@ impl DbOperations {
         Self::group_rows_into_timeline(rows, source_dir)
     }
 
+    /// Lightweight paginated timeline query — skips JOINing objects/faces tables.
+    /// Returns only the fields needed for grid display + total count.
+    pub fn get_timeline_page(
+        db: &SqliteDb,
+        offset: usize,
+        limit: usize,
+        source_dir: &str,
+    ) -> Result<(Vec<crate::core::models::TimelinePageItem>, usize)> {
+        let conn = db.conn();
+        let base = source_dir.trim_end_matches('/');
+
+        let total: usize = conn.query_row(
+            "SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND is_hidden = 0 AND processed = 1",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let mut stmt = conn.prepare(
+            "SELECT id, media_type, file_name, meta_width, meta_height,
+                    meta_created_at, favorite, thumbnail
+             FROM media
+             WHERE deleted_at IS NULL AND is_hidden = 0 AND processed = 1
+             ORDER BY meta_created_at DESC
+             LIMIT ?1 OFFSET ?2"
+        )?;
+
+        let items: Vec<crate::core::models::TimelinePageItem> = stmt
+            .query_map(params![limit as i64, offset as i64], |r| {
+                let file_name: String = r.get(2)?;
+                let thumb: Option<String> = r.get(7)?;
+                let resolved_thumb = thumb.map(|t| super::resolve_thumbnail_path(&t));
+                let file_path = std::path::Path::new(base).join(&file_name).to_string_lossy().to_string();
+                Ok(crate::core::models::TimelinePageItem {
+                    media_id:       r.get(0)?,
+                    file_path,
+                    media_type:     r.get(1)?,
+                    width:          r.get(3)?,
+                    height:         r.get(4)?,
+                    created_at:     r.get(5)?,
+                    favorite:       r.get::<_, i32>(6)? != 0,
+                    thumbnail_path: resolved_thumb,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+
+        Ok((items, total))
+    }
+
+
     pub fn get_distinct_objects(db: &SqliteDb) -> Result<Vec<String>> {
         let conn = db.conn();
         let mut stmt = conn.prepare(
-            "SELECT DISTINCT class_name FROM media_objects
-             WHERE media_id IN (SELECT id FROM media WHERE deleted_at IS NULL AND is_hidden = 0)
-             ORDER BY class_name"
+            "SELECT DISTINCT oc.name FROM media_objects mo
+             JOIN object_class oc ON mo.class_id = oc.id
+             WHERE mo.media_id IN (SELECT id FROM media WHERE deleted_at IS NULL AND is_hidden = 0)
+             ORDER BY oc.name"
         )?;
         let names: Vec<String> = stmt.query_map([], |r| r.get(0))?
             .filter_map(|r| r.ok())

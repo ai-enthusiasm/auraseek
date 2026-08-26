@@ -84,7 +84,8 @@ impl Logger {
     }
 
     fn remove_ansi(text: &str) -> String {
-        let re = regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap();
+        static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = RE.get_or_init(|| regex::Regex::new(r"\x1b\[[0-9;]*m").unwrap());
         re.replace_all(text, "").to_string()
     }
 

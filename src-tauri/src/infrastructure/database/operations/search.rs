@@ -36,14 +36,20 @@ impl DbOperations {
 
     pub fn apply_filters(
         mut results: Vec<SearchResult>,
-        object: Option<&str>,
+        objects: Option<&[String]>,
         face: Option<&str>,
         month: Option<u32>,
         year: Option<i32>,
         media_type: Option<&str>,
     ) -> Result<Vec<SearchResult>> {
-        if let Some(obj) = object {
-            results.retain(|r| r.metadata.objects.iter().any(|o| o.to_lowercase().contains(&obj.to_lowercase())));
+        if let Some(objs) = objects {
+            if !objs.is_empty() {
+                results.retain(|r| {
+                    objs.iter().all(|obj| {
+                        r.metadata.objects.iter().any(|o| o.to_lowercase().contains(&obj.to_lowercase()))
+                    })
+                });
+            }
         }
         if let Some(f) = face {
             let f_lower = f.to_lowercase();
@@ -85,7 +91,7 @@ impl DbOperations {
     ) -> Result<()> {
         let conn = db.conn();
         let (f_obj, f_face, f_month, f_year, f_mt) = match filters {
-            Some(f) => (f.object, f.face, f.month, f.year, f.media_type),
+            Some(f) => (f.objects.map(|v| v.join(",")), f.face, f.month, f.year, f.media_type),
             None => (None, None, None, None, None),
         };
         conn.execute(

@@ -59,6 +59,30 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
             match SqliteDb::open(&config.sqlite_path) {
                 Ok(db) => {
                     crate::log_info!("✅ SQLite database opened: {}", config.sqlite_path.display());
+                    
+                    // One-time migration to recreate thumbnails in high resolution (800x800)
+                    {
+                        let conn = db.conn();
+                        let needs_rebuild: bool = conn.query_row(
+                            "SELECT NOT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_version')",
+                            [],
+                            |r| r.get(0),
+                        ).unwrap_or(true);
+
+                        if needs_rebuild {
+                            let _ = conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)", []);
+                            let _ = conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)", []);
+                            if let Ok(_) = conn.execute("UPDATE media SET thumbnail = NULL", []) {
+                                crate::log_info!("🔄 Schema migration: Resetting thumbnails to trigger high-res rebuilding");
+                                let cache_dir = data_dir.join("thumbnails");
+                                if cache_dir.exists() {
+                                    let _ = std::fs::remove_dir_all(&cache_dir);
+                                    let _ = std::fs::create_dir_all(&cache_dir);
+                                }
+                            }
+                        }
+                    }
+
                     *guard = Some(db);
                 }
                 Err(e) => return Err(format!("SQLite open failed: {}", e)),
@@ -85,6 +109,9 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
                 Ok(client) => {
                     if let Err(e) = QdrantService::ensure_collection(&client, &config.qdrant_collection, 384).await {
                         crate::log_warn!("⚠️ Failed to ensure Qdrant collection: {}", e);
+                    }
+                    if let Err(e) = QdrantService::ensure_collection(&client, crate::core::config::QDRANT_FACE_COLLECTION, 512).await {
+                        crate::log_warn!("⚠️ Failed to ensure Qdrant face collection: {}", e);
                     }
                     crate::log_info!("✅ Qdrant client connected on port {}", connect_port);
                     *guard = Some(client);

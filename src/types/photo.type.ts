@@ -21,8 +21,6 @@ export type DetectedObject = {
   class_name: string;
   conf: number;
   bbox: BboxInfo;
-  /** RLE mask: each [offset, length] means pixels at row-major indices [offset..offset+length) are set */
-  mask_rle?: [number, number][];
 };
 
 export type DetectedFace = {

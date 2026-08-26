@@ -10,26 +10,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::fs;
 
+use crate::core::config::{AI_ASSETS, AI_ASSETS_BASE_URL};
 use crate::infrastructure::database::QdrantService;
-
-const BASE_URL: &str =
-    "https://github.com/ai-enthusiasm/auraseek/releases/download/v1.0.0";
-
-const ASSETS: &[(&str, &str)] = &[
-    ("text_visclir.onnx",                "models/text_visclir.onnx"),
-    ("vision_visclir.onnx",              "models/vision_visclir.onnx"),
-    ("face_recognition_sface_2021dec.onnx", "models/face_recognition_sface_2021dec.onnx"),
-    ("face_detection_yunet_2022mar.onnx",   "models/face_detection_yunet_2022mar.onnx"),
-    ("yolo26n-seg.onnx",                    "models/yolo26n-seg.onnx"),
-    ("bpe.codes",                           "tokenizer/bpe.codes"),
-    ("vocab.txt",                           "tokenizer/vocab.txt"),
-    ("DejaVuSans.ttf",                      "fonts/DejaVuSans.ttf"),
-];
 
 static IS_DOWNLOADING: AtomicBool = AtomicBool::new(false);
 
 pub fn all_models_present(data_dir: &Path) -> bool {
-    let models_ok = ASSETS.iter().all(|(_, rel)| data_dir.join(rel).exists());
+    let models_ok = AI_ASSETS.iter().all(|(_, rel)| data_dir.join(rel).exists());
     let dashboard_enabled = crate::core::config::AppConfig::global().qdrant_dashboard_enabled;
     let qdrant_ok = QdrantService::assets_present(data_dir, dashboard_enabled);
     models_ok && qdrant_ok
@@ -57,7 +44,7 @@ impl DebugModelDownloader {
             return Err(e);
         }
 
-        let needed: Vec<(&str, PathBuf)> = ASSETS
+        let needed: Vec<(&str, PathBuf)> = AI_ASSETS
             .iter()
             .filter_map(|(name, rel)| {
                 let dest = data_dir.join(rel);
@@ -83,7 +70,7 @@ impl DebugModelDownloader {
                     .with_context(|| format!("create dir {}", parent.display()))?;
             }
 
-            let url = format!("{}/{}", BASE_URL, name);
+            let url = format!("{}/{}", AI_ASSETS_BASE_URL, name);
             crate::log_info!("📥 [{}/{}] {}", file_index, total, name);
 
             let res = client.get(&url).send().await

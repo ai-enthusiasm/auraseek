@@ -1,23 +1,21 @@
 /**
- * SegmentOverlay — canvas-based segmentation mask + bbox renderer.
+ * SegmentOverlay — canvas-based bbox overlay renderer.
  *
- * Decodes mask_rle (run-length encoded) data for each detected object and
- * paints a semi-transparent coloured fill + crisp border on a canvas that
+ * Paints bounding boxes + labels + crisp borders on a canvas that
  * sits on top of an <img> rendered with object-cover or object-contain.
  *
- * Works for both object detection (with mask_rle) and face detection
- * (bbox-only fill, since YuNet produces no segmentation masks).
+ * Works for both object detection and face detection.
  */
 
 import { useRef, useEffect } from "react";
 import type { DetectedObject, DetectedFace } from "@/types/photo.type";
 
 export interface SegmentOverlayProps {
-  /** Detected objects — may carry `mask_rle` for pixel-accurate fills */
+  /** Detected objects */
   detectedObjects?: DetectedObject[];
-  /** Detected faces — highlighted using bbox fill (no mask) */
+  /** Detected faces — highlighted using bbox fill */
   detectedFaces?: DetectedFace[];
-  /** Original image width in pixels (used for RLE decoding) */
+  /** Original image width in pixels */
   imgNaturalW: number;
   /** Original image height in pixels */
   imgNaturalH: number;
@@ -33,23 +31,18 @@ export interface SegmentOverlayProps {
   showLabels?: boolean;
   /** Current zoom/view scale — use this to adjust stroke/font size to stay crisp */
   viewScale?: number;
-  /** Whether to render segmentation masks (default: true) */
-  showMasks?: boolean;
   /** Whether to render bbox rectangles (objects + faces) (default: true) */
   showBoxes?: boolean;
-  /** If set, only this object index will be highlighted (mask + label) */
+  /** If set, only this object index will be highlighted (label) */
   activeObjectIndex?: number | null;
-  /** If true, chỉ vẽ mask cho activeObjectIndex (khi chưa có index thì không vẽ gì) */
+  /** If true, chỉ vẽ mask/label cho activeObjectIndex (khi chưa có index thì không vẽ gì) */
   onlyActive?: boolean;
-}
-
-// Decode [offset, length][] RLE into a Uint8Array of 0/1 flags
-function decodeRle(rle: [number, number][], total: number): Uint8Array {
-  const buf = new Uint8Array(total);
-  for (const [off, len] of rle) {
-    buf.fill(1, off, Math.min(off + len, total));
-  }
-  return buf;
+  /** If set, highlight this face ID permanently */
+  activeFaceId?: string;
+  /** If true, draw all faces. If false and activeFaceId is set, only draw the active face. */
+  showAllFaces?: boolean;
+  /** If set, highlight this object class name permanently */
+  activeClassName?: string;
 }
 
 // Fill + border RGBA pairs for up to 6 objects
@@ -74,11 +67,12 @@ export function SegmentOverlay({
   showFaces  = true,
   showLabels = false,
   viewScale  = 1,
-  // Masks (RLE) are expensive and can obscure content; default OFF.
-  showMasks  = false,
   showBoxes  = true,
   activeObjectIndex = null,
   onlyActive = false,
+  activeFaceId,
+  showAllFaces = true,
+  activeClassName,
 }: SegmentOverlayProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -108,84 +102,29 @@ export function SegmentOverlay({
       cropY   = -(displayH - imgNaturalH * s) / 2;
     }
 
-    // Map original-image pixel (ox, oy) → display pixel (px, py)
-    // px = ox * scaleX - cropX
-    // py = oy * scaleY - cropY
-    // Inverse: ox = (px + cropX) / scaleX
-
-    const totalPixels = imgNaturalW * imgNaturalH;
-
-    // ── 1. Decode all object masks ────────────────────────────────────
+    // ── 1. Map objects to indexes and colors ──────────────────────────
     const masks = detectedObjects.map((obj, i) => ({
       index: i,
       obj,
       rgb: PALETTE[i % PALETTE.length],
-      pixels: obj.mask_rle?.length ? decodeRle(obj.mask_rle, totalPixels) : null,
     }));
+
+    const filteredMasks = activeClassName
+      ? masks.filter(m => m.obj.class_name.toLowerCase() === activeClassName.toLowerCase())
+      : masks;
 
     const hasActive = typeof activeObjectIndex === "number";
     const masksToRender = onlyActive
-      ? (hasActive ? masks.filter(m => m.index === activeObjectIndex) : [])
-      : (hasActive ? masks.filter(m => m.index === activeObjectIndex) : masks);
+      ? (hasActive ? filteredMasks.filter(m => m.index === activeObjectIndex) : [])
+      : (hasActive ? filteredMasks.filter(m => m.index === activeObjectIndex) : filteredMasks);
 
-    // ── 2. Fill pixels (single ImageData pass over the display canvas) ─
-    if (showMasks && masksToRender.some(m => m.pixels)) {
-      const imageData = ctx.createImageData(displayW, displayH);
-      const d = imageData.data;
-
-      for (let py = 0; py < displayH; py++) {
-        for (let px = 0; px < displayW; px++) {
-          const ox = Math.floor((px + cropX) / scaleX);
-          const oy = Math.floor((py + cropY) / scaleY);
-          if (ox < 0 || ox >= imgNaturalW || oy < 0 || oy >= imgNaturalH) continue;
-
-          const midx = oy * imgNaturalW + ox;
-          for (const { pixels, rgb } of masksToRender) {
-            if (pixels?.[midx]) {
-              const b = (py * displayW + px) * 4;
-              d[b]     = rgb[0];
-              d[b + 1] = rgb[1];
-              d[b + 2] = rgb[2];
-              d[b + 3] = 110; // ~43% opacity fill
-              break;
-            }
-          }
-        }
-      }
-      ctx.putImageData(imageData, 0, 0);
-    }
-
-    // ── 3. Draw crisp mask borders ────────────────────────────────────
-    if (showMasks) {
-      for (const { pixels, rgb } of masksToRender) {
-        if (!pixels) continue;
-        ctx.fillStyle = `rgba(${rgb[0]},${rgb[1]},${rgb[2]},0.92)`;
-
-        for (let py = 1; py < displayH - 1; py++) {
-          for (let px = 1; px < displayW - 1; px++) {
-            const ox = Math.floor((px + cropX) / scaleX);
-            const oy = Math.floor((py + cropY) / scaleY);
-            if (ox < 0 || ox >= imgNaturalW || oy < 0 || oy >= imgNaturalH) continue;
-            if (!pixels[oy * imgNaturalW + ox]) continue;
-
-            const isEdge =
-              !pixels[oy * imgNaturalW + Math.max(ox - 1, 0)] ||
-              !pixels[oy * imgNaturalW + Math.min(ox + 1, imgNaturalW - 1)] ||
-              !pixels[Math.max(oy - 1, 0) * imgNaturalW + ox] ||
-              !pixels[Math.min(oy + 1, imgNaturalH - 1) * imgNaturalW + ox];
-
-            if (isEdge) {
-              const size = Math.max(1, 2 / viewScale);
-              ctx.fillRect(px - size / 2, py - size / 2, size, size);
-            }
-          }
-        }
-      }
-    }
-
-    // ── 3b. Object bbox rectangles (for all objects) ──────────────────
+    // ── 2. Object bbox rectangles (for all objects) ──────────────────
     if (showBoxes) {
-      masks.forEach(({ obj, rgb }) => {
+      const boxesToRender = activeClassName
+        ? masks.filter(m => m.obj.class_name.toLowerCase() === activeClassName.toLowerCase())
+        : (activeFaceId ? [] : masksToRender);
+
+      boxesToRender.forEach(({ obj, rgb }) => {
         const x = obj.bbox.x * scaleX - cropX;
         const y = obj.bbox.y * scaleY - cropY;
         const w = obj.bbox.w * scaleX;
@@ -197,9 +136,14 @@ export function SegmentOverlay({
       });
     }
 
-    // ── 4. Face bbox fills (violet) ───────────────────────────────────
-    if (showFaces && showBoxes) {
+    // ── 3. Face bbox fills (violet) ───────────────────────────────────
+    if (showFaces && showBoxes && !activeClassName) {
       for (const face of detectedFaces) {
+        const isActive = activeFaceId === face.face_id;
+        if (activeFaceId && !isActive && !showAllFaces) {
+          continue;
+        }
+
         const x = face.bbox.x * scaleX - cropX;
         const y = face.bbox.y * scaleY - cropY;
         const w = face.bbox.w * scaleX;
@@ -207,13 +151,13 @@ export function SegmentOverlay({
 
         ctx.fillStyle   = `rgba(${FACE_RGB[0]},${FACE_RGB[1]},${FACE_RGB[2]},0.35)`;
         ctx.fillRect(x, y, w, h);
-        ctx.strokeStyle = `rgba(${FACE_RGB[0]},${FACE_RGB[1]},${FACE_RGB[2]},0.9)`;
+        ctx.strokeStyle = `rgba(${FACE_RGB[0]},${FACE_RGB[1]},${FACE_RGB[2]},0.95)`;
         ctx.lineWidth   = 2;
         ctx.strokeRect(x, y, w, h);
       }
     }
 
-    // ── 5. Labels ─────────────────────────────────────────────────────
+    // ── 4. Labels ─────────────────────────────────────────────────────
     if (showLabels) {
       const label = (text: string, bx: number, by: number, rgb: [number,number,number]) => {
         const fontSize = Math.max(6, 11 / viewScale);
@@ -229,10 +173,11 @@ export function SegmentOverlay({
         ctx.fillText(text, lx + pad, ly + lh - 4 / viewScale);
       };
 
-      const labelMasks = activeObjectIndex != null ? masksToRender : masks;
+      const labelMasks = activeClassName
+        ? masks.filter(m => m.obj.class_name.toLowerCase() === activeClassName.toLowerCase())
+        : (activeFaceId ? [] : (activeObjectIndex != null ? masksToRender : masks));
 
-      labelMasks.forEach(({ obj, rgb, pixels }) => {
-        if (showMasks && !pixels) return;
+      labelMasks.forEach(({ obj, rgb }) => {
         label(
           `${obj.class_name} ${(obj.conf * 100).toFixed(0)}%`,
           obj.bbox.x * scaleX - cropX,
@@ -241,8 +186,12 @@ export function SegmentOverlay({
         );
       });
 
-      if (showFaces) {
+      if (showFaces && !activeClassName) {
         detectedFaces.forEach(face => {
+          const isActive = activeFaceId === face.face_id;
+          if (activeFaceId && !isActive && !showAllFaces) {
+            return;
+          }
           label(
             face.name ?? "Face",
             face.bbox.x * scaleX - cropX,
@@ -263,10 +212,12 @@ export function SegmentOverlay({
     objectFit,
     showFaces,
     showLabels,
-    showMasks,
     showBoxes,
     viewScale,
     activeObjectIndex,
+    activeFaceId,
+    showAllFaces,
+    activeClassName,
   ]);
 
   return (

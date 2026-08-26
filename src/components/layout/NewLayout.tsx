@@ -158,7 +158,7 @@ export function NewLayout({
   ];
 
   return (
-    <div className="relative w-full h-screen overflow-hidden flex flex-col bg-white">
+    <div className="relative w-full h-screen overflow-hidden flex flex-col bg-background text-foreground">
       
       {/* ═══════════════ DECORATIVE GLOW BLOBS ═══════════════ */}
       <div className="absolute top-0 left-0 w-[400px] h-[400px] bg-red-500/10 blur-[120px] rounded-full -translate-x-1/2 -translate-y-1/2 pointer-events-none z-0" />
@@ -242,7 +242,7 @@ export function NewLayout({
             >
                 <path 
                   d="M0 60 C240 20, 480 90, 720 50 C960 10, 1200 80, 1440 40 L1440 100 L0 100 Z" 
-                  fill="white"
+                  style={{ fill: "var(--background)" }}
                 />
             </svg>
         </div>
@@ -259,7 +259,7 @@ export function NewLayout({
       </div>
 
       {/* ═══════════════ SEARCH & ACTIONS ═══════════════ */}
-      <div className="relative z-20 w-full flex justify-center px-8 py-4 bg-white">
+      <div className="relative z-20 w-full flex justify-center px-8 py-4 bg-background">
         <div className="w-full max-w-4xl flex flex-col gap-4">
           
           {initError && (
@@ -275,8 +275,8 @@ export function NewLayout({
               <div className={cn(
                 "flex items-center rounded-full border transition-all duration-500 px-5 cursor-text",
                 searchFocused
-                  ? "bg-gray-200 border-primary/40 ring-[6px] ring-primary/10 shadow-[0_12px_40px_rgba(0,0,0,0.1)] scale-[1.01]"
-                  : "bg-gray-200 border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5"
+                  ? "bg-background border-primary/50 ring-[4px] ring-primary/10 shadow-[0_12px_40px_rgba(0,0,0,0.06)] scale-[1.01]"
+                  : "bg-zinc-50 dark:bg-zinc-900/60 border-zinc-200/80 dark:border-zinc-800 shadow-[0_4px_20px_rgba(0,0,0,0.02)] hover:border-zinc-300 dark:hover:border-zinc-700 hover:shadow-[0_8px_32px_rgba(0,0,0,0.04)] hover:-translate-y-0.5"
               )}
               onClick={() => searchInputRef.current?.focus()}>
                 {isSearching ? (
@@ -297,7 +297,7 @@ export function NewLayout({
                   onBlur={() => { syncValue(); setTimeout(() => setSearchFocused(false), 200); }}
                   onKeyDown={handleKeyDown}
                   placeholder={isSearching ? "Đang tìm kiếm..." : "Tìm kiếm..."}
-                  className="flex-1 h-14 bg-transparent border-none text-black placeholder-zinc-400 px-4 font-['Roboto'] text-lg outline-none"
+                  className="flex-1 h-14 bg-transparent border-none text-foreground placeholder-muted-foreground px-4 font-['Roboto'] text-lg outline-none"
                 />
 
                 <div className="flex items-center gap-2">
@@ -358,47 +358,47 @@ export function NewLayout({
                 <Button 
                   variant="ghost" 
                   size="icon" 
-                  className="w-14 h-14 rounded-full bg-gray-200 border border-zinc-200 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:bg-gray-900 hover:border-primary/30 hover:shadow-[0_8px_32px_rgba(0,0,0,0.08)] hover:-translate-y-0.5 text-zinc-600 hover:text-primary transition-all duration-300 active:scale-95"
+                  className="w-14 h-14 rounded-full bg-zinc-50 dark:bg-zinc-900/60 border border-zinc-200/80 dark:border-zinc-800 shadow-[0_4px_16px_rgba(0,0,0,0.02)] hover:bg-zinc-100 dark:hover:bg-zinc-800 hover:text-zinc-900 dark:hover:text-zinc-100 hover:border-zinc-300 dark:hover:border-zinc-700 transition-all duration-300 active:scale-95 text-zinc-600 dark:text-zinc-400"
                 >
                   <Grid3X3 className="w-6 h-6" />
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent 
                 align="end" 
-                className="w-72 mt-4 bg-white/70 dark:bg-black/40 backdrop-blur-3xl border-white/20 dark:border-white/10 shadow-[0_20px_50px_rgba(0,0,0,0.2)] rounded-[32px] p-3 font-['Roboto']"
+                className="w-72 mt-4 bg-popover/90 dark:bg-zinc-950/95 backdrop-blur-3xl border-border shadow-[0_20px_50px_rgba(0,0,0,0.15)] rounded-[32px] p-3 font-['Roboto']"
               >
-                <DropdownMenuLabel className="px-5 py-3 text-xs font-black uppercase tracking-[0.25em] text-white/30">Danh mục chính</DropdownMenuLabel>
+                <DropdownMenuLabel className="px-5 py-3 text-xs font-black uppercase tracking-[0.25em] text-muted-foreground/50">Danh mục chính</DropdownMenuLabel>
                 <div className="space-y-1">
                   {menuItems.map(item => (
                     <DropdownMenuItem 
                       key={item.key} 
                       onClick={() => onNavClick?.(item.key)}
                       className={cn(
-                        "rounded-2xl px-5 py-4 cursor-pointer transition-all duration-200 group flex items-center gap-4",
+                        "rounded-2xl px-5 py-3.5 cursor-pointer transition-all duration-200 group flex items-center gap-4",
                         activeKey === item.key 
-                          ? "bg-white/15 text-white shadow-inner" 
-                          : "hover:bg-white/10 text-white/70 hover:text-white"
+                          ? "bg-primary/10 text-primary font-semibold" 
+                          : "text-zinc-700 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100"
                       )}
                     >
                       <div className={cn(
                         "p-2 rounded-xl transition-colors",
-                        activeKey === item.key ? "bg-primary/20" : "bg-white/5 group-hover:bg-white/10"
+                        activeKey === item.key ? "bg-primary/20 text-primary" : "bg-zinc-100 dark:bg-zinc-800 group-hover:bg-zinc-200 dark:group-hover:bg-zinc-700 text-zinc-500 dark:text-zinc-400"
                       )}>
                         <item.icon className="w-5 h-5" />
                       </div>
-                      <span className="text-[17px] font-medium">{item.title}</span>
+                      <span className="text-[16px] font-medium">{item.title}</span>
                     </DropdownMenuItem>
                   ))}
                 </div>
-                <div className="h-px bg-white/5 my-3" />
+                <div className="h-px bg-border/50 my-3" />
                 <DropdownMenuItem 
                   onClick={() => setShowSettings(true)}
-                  className="rounded-2xl px-5 py-4 cursor-pointer text-white/50 hover:text-white hover:bg-white/5 flex items-center gap-4 transition-colors"
+                  className="rounded-2xl px-5 py-3.5 cursor-pointer text-zinc-500 dark:text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800/80 hover:text-zinc-900 dark:hover:text-zinc-100 flex items-center gap-4 transition-colors group"
                 >
-                  <div className="p-2 rounded-xl bg-white/5 group-hover:bg-white/10">
+                  <div className="p-2 rounded-xl bg-zinc-100 dark:bg-zinc-800 group-hover:bg-zinc-200 dark:group-hover:bg-zinc-700">
                     <Settings className="w-5 h-5" />
                   </div>
-                  <span className="text-[17px]">Cài đặt</span>
+                  <span className="text-[16px]">Cài đặt</span>
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
@@ -407,8 +407,8 @@ export function NewLayout({
       </div>
 
       {/* ═══════════════ MAIN CONTENT ═══════════════ */}
-      <main className="flex flex-col flex-1 w-full overflow-hidden relative z-10 bg-white">
-        <div className="w-full h-full">
+      <main className="flex flex-col flex-1 w-full overflow-hidden relative z-10 bg-background text-foreground">
+        <div className="w-full h-full flex flex-col overflow-hidden">
           {children}
         </div>
       </main>

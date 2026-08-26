@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tauri::Emitter;
+use futures::StreamExt;
 
 use crate::infrastructure::database::{SqliteDb, DbOperations};
 use crate::infrastructure::ai::AuraSeekEngine;
@@ -67,74 +68,249 @@ pub async fn ingest_folder(
         errors: 0,
     };
 
-    let total_to_process = total;
-    let app_handle = app.clone();
+    // ── Phase 1: Pre-load processed files into memory (1 DB query) ──────
+    // This replaces N individual DB queries during the scan loop.
+    let processed_set: std::collections::HashSet<(String, i64, Option<String>)> = {
+        let guard = sqlite.lock().unwrap();
+        if let Some(ref db) = *guard {
+            let conn = db.conn();
+            if let Ok(mut stmt) = conn.prepare(
+                "SELECT file_name, file_size, meta_modified_at FROM media WHERE processed = 1"
+            ) {
+                if let Ok(rows) = stmt.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                    ))
+                }) {
+                    rows.filter_map(|r| r.ok()).collect()
+                } else {
+                    std::collections::HashSet::new()
+                }
+            } else {
+                std::collections::HashSet::new()
+            }
+        } else {
+            std::collections::HashSet::new()
+        }
+    };
+    crate::log_info!("📋 Pre-loaded {} processed file entries into memory", processed_set.len());
 
-    let mut ai_processed = 0usize;
-    let files = image_files
+    // ── Phase 2: Batch scan — classify files as new/skip using in-memory set ──
+    // Files that pass the in-memory check still go through scan_single_file for DB registration.
+    let all_files: Vec<(PathBuf, bool, &str)> = image_files
         .into_iter()
         .map(|path| (path, false, "image"))
-        .chain(video_files.into_iter().map(|path| (path, true, "video")));
+        .chain(video_files.into_iter().map(|path| (path, true, "video")))
+        .collect();
 
-    for (path, is_video, media_type) in files {
-        if abort_sync.load(std::sync::atomic::Ordering::SeqCst) {
-            crate::log_info!("🛑 Ingest loop aborted");
-            break;
-        }
-
-        let path_str = path.to_string_lossy().to_string();
-        let file_name_only = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_string();
-
-        let media_id = match scan_single_file(&path, &sqlite, &source_dir, media_type).await {
-            Ok(Some(media_id)) => {
-                summary.newly_added += 1;
-                media_id
-            }
-            Ok(None) => {
+    // Fast filter: skip files already in processed_set (no DB query needed)
+    let mut to_process: Vec<(PathBuf, bool, String)> = Vec::new();
+    for (path, is_video, media_type) in &all_files {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_string();
+        if let Ok(meta) = std::fs::metadata(path) {
+            let key = (
+                name,
+                meta.len() as i64,
+                crate::infrastructure::ingest::image_processor::file_modified_at_public(&meta),
+            );
+            if processed_set.contains(&key) {
                 summary.skipped_dup += 1;
                 continue;
             }
-            Err(e) => {
-                crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
-                summary.errors += 1;
-                continue;
-            }
-        };
-
-        crate::log_info!("🤖 [AI {}/{}] Processing: {}", ai_processed + 1, total_to_process, file_name_only);
-
-        if is_video {
-            let cache_ref = thumb_cache_dir.as_deref();
-            match video_processor::process_video(&path_str, &media_id, &sqlite, &qdrant, &engine, cache_ref).await {
-                Ok(Some(thumb)) => crate::log_info!("🎥 Video done, thumbnail: {}", thumb),
-                Ok(None)        => crate::log_info!("🎥 Video done (no thumbnail)"),
-                Err(e)          => crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name_only, e),
-            }
-        } else {
-            process_image_file(&path_str, &media_id, &file_name_only, &sqlite, &qdrant, &engine).await;
         }
+        to_process.push((path.clone(), *is_video, media_type.to_string()));
+    }
+    crate::log_info!(
+        "⚡ Fast filter: {} skipped (already processed), {} to process",
+        summary.skipped_dup, to_process.len()
+    );
 
-        ai_processed += 1;
+    // ── Phase 3: Unified Concurrent Scanning & AI Ingestion Streaming ────
+    let total_to_process = to_process.len();
+    crate::log_info!("⚙️ Starting parallel ingestion pipeline for {} files...", total_to_process);
 
-        if let Some(ref app) = app_handle {
-            if let Err(e) = app.emit(
-                "ingest-progress",
-                &IngestProgress {
-                    processed: ai_processed,
-                    total: total_to_process,
-                    current_file: file_name_only.clone(),
-                },
-            ) {
-                crate::log_warn!("⚠️ Failed to emit ingest-progress: {}", e);
+    // Scale up AI engine threads based on available RAM/CPU for fast ingestion
+    if total_to_process > 0 {
+        let safe_threads = crate::core::config::compute_safe_threads();
+        crate::log_info!("🚀 Reinitializing AI engine with {} threads for ingest pipeline", safe_threads);
+        {
+            let mut engine_guard = engine.lock().await;
+            let data_dir = if let Some(ref app) = app {
+                use tauri::Manager;
+                let state = app.state::<crate::app::state::AppState>();
+                let guard = state.data_dir.lock().unwrap();
+                guard.clone()
+            } else {
+                std::path::PathBuf::from("assets")
+            };
+            let config = crate::infrastructure::ai::engine::EngineConfig::new_with_dir(&data_dir);
+            match AuraSeekEngine::new_with_threads(config, safe_threads) {
+                Ok(e) => { *engine_guard = Some(e); }
+                Err(e) => { crate::log_error!("⚠️ Failed to scale up engine threads: {}", e); }
             }
         }
     }
 
-    crate::log_info!("✅ Ingest complete: {} new, {} skipped, {} errors, {} AI processed",
-        summary.newly_added, summary.skipped_dup, summary.errors, ai_processed);
+    struct EngineRestoreGuard {
+        engine: Arc<Mutex<Option<AuraSeekEngine>>>,
+        app: Option<tauri::AppHandle>,
+    }
+
+    impl Drop for EngineRestoreGuard {
+        fn drop(&mut self) {
+            let engine = self.engine.clone();
+            let app = self.app.clone();
+            tokio::spawn(async move {
+                crate::log_info!("🚀 Restoring AI engine to 1 thread for idle/search state");
+                let mut engine_guard = engine.lock().await;
+                let data_dir = if let Some(ref app) = app {
+                    use tauri::Manager;
+                    let state = app.state::<crate::app::state::AppState>();
+                    let guard = state.data_dir.lock().unwrap();
+                    guard.clone()
+                } else {
+                    std::path::PathBuf::from("assets")
+                };
+                let config = crate::infrastructure::ai::engine::EngineConfig::new_with_dir(&data_dir);
+                match AuraSeekEngine::new_with_threads(config, 1) {
+                    Ok(e) => { *engine_guard = Some(e); }
+                    Err(e) => { crate::log_error!("⚠️ Failed to restore engine threads: {}", e); }
+                }
+            });
+        }
+    }
+
+    let _restore_guard = if total_to_process > 0 {
+        Some(EngineRestoreGuard {
+            engine: engine.clone(),
+            app: app.clone(),
+        })
+    } else {
+        None
+    };
+
+    // Shared thread-safe counters
+    let newly_added_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let skipped_dup_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let errors_counter      = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let processed_counter   = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+    // Since AI inference is fully serialized by the engine mutex, there is no benefit to high concurrency.
+    // Overlapping disk I/O and thumbnailing of the next image with the current AI inference is fully achieved with concurrency 2.
+    // Capping concurrency at 2 prevents thread starvation and thermal throttling.
+    let concurrency_limit = 2;
+    crate::log_info!("⚙️ Ingestion concurrency limit set to: {}", concurrency_limit);
+
+    let app_handle = app.clone();
+    let abort_flag = abort_sync.clone();
+    let library_epoch_shared = library_epoch.clone();
+    let thumb_cache_shared = thumb_cache_dir.clone();
+    let sqlite_shared = sqlite.clone();
+    let qdrant_shared = qdrant.clone();
+    let engine_shared = engine.clone();
+    let source_dir_shared = Arc::new(source_dir.clone());
+
+    let mut stream = futures::stream::iter(to_process)
+        .map(|(path, is_video, media_type)| {
+            let app_handle = app_handle.clone();
+            let abort_flag = abort_flag.clone();
+            let library_epoch = library_epoch_shared.clone();
+            let thumb_cache_dir = thumb_cache_shared.clone();
+            let sqlite = sqlite_shared.clone();
+            let qdrant = qdrant_shared.clone();
+            let engine = engine_shared.clone();
+            let source_dir = source_dir_shared.clone();
+            let newly_added = newly_added_counter.clone();
+            let skipped_dup = skipped_dup_counter.clone();
+            let errors      = errors_counter.clone();
+            let processed   = processed_counter.clone();
+
+            tokio::spawn(async move {
+                if abort_flag.load(std::sync::atomic::Ordering::SeqCst) {
+                    return;
+                }
+                if library_epoch.load(Ordering::SeqCst) != epoch_at_invoke {
+                    return;
+                }
+
+                let file_name_only = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                check_system_congestion_and_throttle().await;
+
+                // 1. Scan/register the file in the database (hashing is parallel outside DB lock)
+                let scan_res = scan_single_file(&path, &sqlite, &source_dir, &media_type);
+
+                match scan_res {
+                    Ok(Some(media_id)) => {
+                        newly_added.fetch_add(1, Ordering::SeqCst);
+                        
+                        // 2. Perform AI Ingestion
+                        let path_str = path.to_string_lossy().to_string();
+                        crate::log_info!("🤖 Ingesting: {}", file_name_only);
+
+                        if is_video {
+                            let cache_ref = thumb_cache_dir.as_deref();
+                            match video_processor::process_video(&path_str, &media_id, &sqlite, &qdrant, &engine, cache_ref).await {
+                                Ok(Some(thumb)) => crate::log_info!("🎥 Video done, thumbnail: {}", thumb),
+                                Ok(None)        => crate::log_info!("🎥 Video done (no thumbnail)"),
+                                Err(e)          => crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name_only, e),
+                            }
+                        } else {
+                            let cache_ref = thumb_cache_dir.as_deref();
+                            process_image_file(&path_str, &media_id, &file_name_only, &sqlite, &qdrant, &engine, cache_ref).await;
+                        }
+                    }
+                    Ok(None) => {
+                        skipped_dup.fetch_add(1, Ordering::SeqCst);
+                    }
+                    Err(e) => {
+                        crate::log_warn!("⚠️ Scan error {:?}: {}", path, e);
+                        errors.fetch_add(1, Ordering::SeqCst);
+                    }
+                }
+
+                // Increment progress and emit event
+                let completed = processed.fetch_add(1, Ordering::SeqCst) + 1;
+                if let Some(ref app) = app_handle {
+                    let _ = app.emit(
+                        "ingest-progress",
+                        &IngestProgress {
+                            processed: completed,
+                            total: total_to_process,
+                            current_file: file_name_only,
+                        },
+                    );
+                }
+            })
+        })
+        .buffer_unordered(concurrency_limit);
+
+    // Consume the stream
+    while let Some(res) = stream.next().await {
+        if abort_flag.load(std::sync::atomic::Ordering::SeqCst) {
+            crate::log_info!("🛑 Ingestion loop aborted");
+            break;
+        }
+        if library_epoch.load(Ordering::SeqCst) != epoch_at_invoke {
+            crate::log_info!("🛑 Ingestion loop stopped (library reset)");
+            break;
+        }
+        if let Err(e) = res {
+            crate::log_error!("⚠️ Task join error: {}", e);
+        }
+    }
+
+    summary.newly_added = newly_added_counter.load(Ordering::SeqCst);
+    summary.skipped_dup = skipped_dup_counter.load(Ordering::SeqCst) + (total - total_to_process);
+    summary.errors = errors_counter.load(Ordering::SeqCst);
+
+    crate::log_info!("✅ Ingest complete: {} new, {} skipped, {} errors",
+        summary.newly_added, summary.skipped_dup, summary.errors);
 
     Ok(summary)
 }
@@ -146,6 +322,7 @@ pub async fn ingest_files(
     qdrant: Arc<Mutex<Option<qdrant_client::Qdrant>>>,
     engine: Arc<Mutex<Option<AuraSeekEngine>>>,
     thumb_cache_dir: Option<PathBuf>,
+    app_handle: Option<tauri::AppHandle>,
 ) -> Result<IngestSummary> {
     let dest_path = Path::new(&dest_dir);
     if !dest_path.exists() {
@@ -160,6 +337,8 @@ pub async fn ingest_files(
     };
 
     for src_path_str in &file_paths {
+        check_system_congestion_and_throttle().await;
+
         let src = Path::new(src_path_str);
         let file_name = match src.file_name().and_then(|n| n.to_str()) {
             Some(n) => n.to_string(),
@@ -172,6 +351,19 @@ pub async fn ingest_files(
         if !is_image && !is_video {
             crate::log_warn!("⚠️ Skipping unsupported file: {}", file_name);
             summary.skipped_dup += 1;
+            
+            // Emit progress event for skipped unsupported file
+            let completed = summary.newly_added + summary.skipped_dup + summary.errors;
+            if let Some(ref app) = app_handle {
+                let _ = app.emit(
+                    "ingest-progress",
+                    &IngestProgress {
+                        processed: completed,
+                        total: file_paths.len(),
+                        current_file: file_name.clone(),
+                    },
+                );
+            }
             continue;
         }
         let media_type = if is_video { "video" } else { "image" };
@@ -181,11 +373,26 @@ pub async fn ingest_files(
             if let Err(e) = std::fs::copy(src, &dest) {
                 crate::log_warn!("⚠️ Failed to copy {} -> {}: {}", src_path_str, dest.display(), e);
                 summary.errors += 1;
+                
+                // Emit progress event for failed copy
+                let completed = summary.newly_added + summary.skipped_dup + summary.errors;
+                if let Some(ref app) = app_handle {
+                    let _ = app.emit(
+                        "ingest-progress",
+                        &IngestProgress {
+                            processed: completed,
+                            total: file_paths.len(),
+                            current_file: file_name.clone(),
+                        },
+                    );
+                }
                 continue;
             }
         }
 
-        match scan_single_file(&dest, &sqlite, &dest_dir, media_type).await {
+        let scan_result = scan_single_file(&dest, &sqlite, &dest_dir, media_type);
+
+        match scan_result {
             Ok(Some(media_id)) => {
                 crate::log_info!("📎 Copied+ingested: {} ({}) as {}", file_name, media_id, media_type);
                 summary.newly_added += 1;
@@ -198,7 +405,8 @@ pub async fn ingest_files(
                         crate::log_warn!("🎥 Video pipeline error for {}: {}", file_name, e);
                     }
                 } else {
-                    process_image_file(&dest_str, &media_id, &file_name, &sqlite, &qdrant, &engine).await;
+                    let cache_ref = thumb_cache_dir.as_deref();
+                    process_image_file(&dest_str, &media_id, &file_name, &sqlite, &qdrant, &engine, cache_ref).await;
                 }
             }
             Ok(None) => { summary.skipped_dup += 1; }
@@ -207,7 +415,67 @@ pub async fn ingest_files(
                 summary.errors += 1;
             }
         }
+
+        // Emit progress event
+        let completed = summary.newly_added + summary.skipped_dup + summary.errors;
+        if let Some(ref app) = app_handle {
+            let _ = app.emit(
+                "ingest-progress",
+                &IngestProgress {
+                    processed: completed,
+                    total: file_paths.len(),
+                    current_file: file_name.clone(),
+                },
+            );
+        }
     }
 
     Ok(summary)
+}
+
+struct ThrottleState {
+    last_check: Option<std::time::Instant>,
+    free_pct: f64,
+    cpu_load: f32,
+}
+
+static THROTTLE_STATE: once_cell::sync::Lazy<std::sync::Mutex<ThrottleState>> = once_cell::sync::Lazy::new(|| {
+    std::sync::Mutex::new(ThrottleState {
+        last_check: None,
+        free_pct: 100.0,
+        cpu_load: 0.0,
+    })
+});
+
+async fn check_system_congestion_and_throttle() {
+    let now = std::time::Instant::now();
+    let (free_pct, cpu_load) = {
+        let mut state = THROTTLE_STATE.lock().unwrap();
+        let cache_valid = state.last_check.map(|last| now.duration_since(last) < std::time::Duration::from_secs(3)).unwrap_or(false);
+        if cache_valid {
+            (state.free_pct, state.cpu_load)
+        } else {
+            let free = crate::app::helpers::available_ram_percent();
+            let cpu = {
+                let mut sys = crate::app::helpers::SYSTEM.lock().unwrap();
+                sys.refresh_cpu_all();
+                sys.global_cpu_usage()
+            };
+
+            state.last_check = Some(now);
+            state.free_pct = free;
+            state.cpu_load = cpu;
+            (free, cpu)
+        }
+    };
+
+    if free_pct < 10.0 || cpu_load > 90.0 {
+        crate::log_warn!(
+            "⚠️ System resource pressure detected! Available RAM: {:.1}%, CPU Load: {:.1}%. Throttling ingestion...",
+            free_pct, cpu_load
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    } else if free_pct < 20.0 || cpu_load > 75.0 {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
 }

@@ -8,6 +8,8 @@ type PhotoGridProps = {
   showBbox?: boolean;
   overlayShowFaces?: boolean;
   overlayShowLabels?: boolean;
+  activeFaceId?: string;
+  activeClassName?: string;
 };
 
 export function PhotoGrid({
@@ -17,6 +19,8 @@ export function PhotoGrid({
   showBbox           = false,
   overlayShowFaces   = true,
   overlayShowLabels  = true,
+  activeFaceId,
+  activeClassName,
 }: PhotoGridProps) {
   return (
     <div className="grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 mb-8">
@@ -30,6 +34,8 @@ export function PhotoGrid({
           showBbox={showBbox}
           overlayShowFaces={overlayShowFaces}
           overlayShowLabels={overlayShowLabels}
+          activeFaceId={activeFaceId}
+          activeClassName={activeClassName}
         />
       ))}
     </div>

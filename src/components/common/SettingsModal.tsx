@@ -97,6 +97,7 @@ export function SettingsModal({ open, onOpenChange, currentSourceDir = "", onSou
         }
     };
 
+
     const handleReset = async () => {
         // Đóng xác nhận + Cài đặt ngay trong DOM trước khi invoke (tránh khung/overlay kẹt nếu Rust chờ lâu).
         flushSync(() => {

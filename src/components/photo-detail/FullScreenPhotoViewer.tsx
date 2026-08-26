@@ -1,4 +1,4 @@
-import { Plus, Minus } from "lucide-react";
+import { Plus, Minus, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Photo } from "@/types/photo.type";
 import { PhotoInfoPanel } from "./PhotoInfoPanel";
 import { useState, useRef, useEffect } from "react";
@@ -11,13 +11,21 @@ import { ConfirmDialog } from "../ui/ConfirmDialog";
 export function FullScreenPhotoViewer({
     photo,
     onClose,
+    onNext,
+    onPrev,
     isTrashMode = false,
     isHiddenMode = false,
+    activeFaceId,
+    activeClassName,
 }: {
     photo: Photo;
     onClose: () => void;
+    onNext?: () => void;
+    onPrev?: () => void;
     isTrashMode?: boolean;
     isHiddenMode?: boolean;
+    activeFaceId?: string;
+    activeClassName?: string;
 }) {
     const [showInfo, setShowInfo] = useState(true);
     const [showBbox, setShowBbox] = useState(() => {
@@ -45,6 +53,27 @@ export function FullScreenPhotoViewer({
     const [scale, setScale] = useState(1);
     const panRef = useRef({ x: 0, y: 0 });
     const [isDragging, setIsDragging] = useState(false);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (scale > 1) return;
+            if (
+                document.activeElement?.tagName === "INPUT" ||
+                document.activeElement?.tagName === "TEXTAREA"
+            ) {
+                return;
+            }
+            if (e.key === "ArrowLeft" && onPrev) {
+                onPrev();
+            } else if (e.key === "ArrowRight" && onNext) {
+                onNext();
+            } else if (e.key === "Escape" && onClose) {
+                onClose();
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [scale, onNext, onPrev, onClose]);
     const dragStart = useRef({ x: 0, y: 0 });
     const MIN_SCALE = 1;
     const MAX_SCALE = 5;
@@ -351,9 +380,38 @@ export function FullScreenPhotoViewer({
                     isVideo={false}
                 />
 
-                <div
-                    ref={containerRef}
-                    className="flex-1 flex items-center justify-center p-4 relative overflow-hidden select-none outline-none"
+                <div className="relative flex-1 min-h-0 w-full">
+                    {scale === 1 && onPrev && (
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onPrev();
+                            }}
+                            className="absolute left-4 top-1/2 -translate-y-1/2 z-50 flex items-center justify-center w-12 h-12 rounded-full bg-black/40 hover:bg-black/60 active:scale-95 border border-white/10 text-white/80 hover:text-white transition-all cursor-pointer backdrop-blur-md shadow-2xl focus:outline-none animate-in fade-in duration-200"
+                            aria-label="Previous photo"
+                        >
+                            <ChevronLeft className="w-6 h-6" />
+                        </button>
+                    )}
+
+                    {scale === 1 && onNext && (
+                        <button
+                            type="button"
+                            onClick={(e) => {
+                                e.stopPropagation();
+                                onNext();
+                            }}
+                            className="absolute right-4 top-1/2 -translate-y-1/2 z-50 flex items-center justify-center w-12 h-12 rounded-full bg-black/40 hover:bg-black/60 active:scale-95 border border-white/10 text-white/80 hover:text-white transition-all cursor-pointer backdrop-blur-md shadow-2xl focus:outline-none animate-in fade-in duration-200"
+                            aria-label="Next photo"
+                        >
+                            <ChevronRight className="w-6 h-6" />
+                        </button>
+                    )}
+
+                    <div
+                        ref={containerRef}
+                        className="w-full h-full flex items-center justify-center p-4 relative overflow-hidden select-none outline-none"
                     onWheel={handleWheel}
                     onDoubleClick={handleDoubleClick}
                     onPointerDown={handlePointerDown}
@@ -391,23 +449,30 @@ export function FullScreenPhotoViewer({
                                         });
                                     }}
                                 />
-                                {(showBbox || activeObjectIndex != null) && hasOverlays && renderedW > 0 && (
-                                    <SegmentOverlay
-                                        detectedObjects={photo.detectedObjects}
-                                        detectedFaces={photo.detectedFaces}
-                                        imgNaturalW={imgRef.current?.naturalWidth || photo.width || 0}
-                                        imgNaturalH={imgRef.current?.naturalHeight || photo.height || 0}
-                                        displayW={renderedW}
-                                        displayH={renderedH}
-                                        objectFit="contain"
-                                        showFaces={showBbox}
-                                        showLabels={false}
-                                        showMasks={false}
-                                        showBoxes={showBbox}
-                                        viewScale={scale}
-                                        activeObjectIndex={activeObjectIndex}
-                                    />
-                                )}
+                                {(() => {
+                                    const hasActiveFace = activeFaceId && photo.detectedFaces?.some(f => f.face_id === activeFaceId);
+                                    const hasActiveClassName = activeClassName && photo.detectedObjects?.some(o => o.class_name.toLowerCase() === activeClassName.toLowerCase());
+                                    const shouldShowOverlay = showBbox || activeObjectIndex != null || hasActiveFace || hasActiveClassName;
+                                    return shouldShowOverlay && hasOverlays && renderedW > 0 && (
+                                        <SegmentOverlay
+                                            detectedObjects={activeFaceId ? undefined : photo.detectedObjects}
+                                            detectedFaces={photo.detectedFaces}
+                                            imgNaturalW={imgRef.current?.naturalWidth || photo.width || 0}
+                                            imgNaturalH={imgRef.current?.naturalHeight || photo.height || 0}
+                                            displayW={renderedW}
+                                            displayH={renderedH}
+                                            objectFit="contain"
+                                            showFaces={showBbox || !!hasActiveFace}
+                                            showLabels={false}
+                                            showBoxes={showBbox || !!hasActiveFace || !!hasActiveClassName}
+                                            viewScale={scale}
+                                            activeObjectIndex={activeObjectIndex}
+                                            activeFaceId={activeFaceId}
+                                            showAllFaces={showBbox}
+                                            activeClassName={activeClassName}
+                                        />
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>
@@ -460,6 +525,7 @@ export function FullScreenPhotoViewer({
                             </div>
                         </div>
                     )}
+                </div>
                 </div>
             </div>
 

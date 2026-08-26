@@ -13,7 +13,6 @@ use crate::core::models::SyncStatus;
 
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "bmp", "webp", "tiff", "tif", "heic", "avif"];
 const VIDEO_EXTS: &[&str] = &["mp4", "mov", "avi", "mkv", "webm", "m4v", "flv", "wmv"];
-const DEBOUNCE_MS: u64 = 2000;
 
 pub struct FsWatcherHandle {
     _watcher: RecommendedWatcher,
@@ -48,9 +47,13 @@ impl FileWatcher {
         engine: Arc<Mutex<Option<AuraSeekEngine>>>,
         sync_status: Arc<Mutex<SyncStatus>>,
         thumb_cache_dir: Option<PathBuf>,
+        app_handle: Option<tauri::AppHandle>,
     ) -> anyhow::Result<FsWatcherHandle> {
         let (event_tx, mut event_rx) = mpsc::channel::<PathBuf>(512);
         let (stop_tx, mut stop_rx) = mpsc::channel::<()>(1);
+
+        let debounce_ms = crate::core::config::AppConfig::global().fs_watcher_debounce_ms;
+        let min_ram_pct = crate::core::config::AppConfig::global().fs_watcher_min_ram_percent;
 
         let tx_clone = event_tx.clone();
         let mut watcher = RecommendedWatcher::new(
@@ -86,7 +89,7 @@ impl FileWatcher {
                             pending.insert(p);
                         }
 
-                        tokio::time::sleep(Duration::from_millis(DEBOUNCE_MS)).await;
+                        tokio::time::sleep(Duration::from_millis(debounce_ms)).await;
 
                         while let Ok(p) = event_rx.try_recv() {
                             pending.insert(p);
@@ -110,10 +113,15 @@ impl FileWatcher {
                                 total: files.len(),
                                 message: format!("Đang xử lý {} tệp mới...", files.len()),
                             };
+                            // Emit event to frontend
+                            if let Some(ref app) = app_handle {
+                                use tauri::Emitter;
+                                let _ = app.emit("sync-status-changed", st.clone());
+                            }
                         }
 
                         let ram_pct = crate::app::helpers::available_ram_percent();
-                        if ram_pct < 10.0 {
+                        if ram_pct < min_ram_pct as f64 {
                             crate::log_warn!("⚠️ FS watcher: not enough RAM ({:.1}%), skipping batch", ram_pct);
                             let mut st = sync_status.lock().await;
                             *st = SyncStatus {
@@ -133,6 +141,7 @@ impl FileWatcher {
                             qdrant.clone(),
                             engine.clone(),
                             thumb_cache,
+                            app_handle.clone(),
                         ).await {
                             Ok(summary) => {
                                 crate::log_info!(
@@ -146,6 +155,10 @@ impl FileWatcher {
                                     total: summary.total_found,
                                     message: format!("Đã xử lý {} ảnh mới", summary.newly_added),
                                 };
+                                if let Some(ref app) = app_handle {
+                                    use tauri::Emitter;
+                                    let _ = app.emit("sync-status-changed", st.clone());
+                                }
                             }
                             Err(e) => {
                                 crate::log_error!("❌ FS watcher ingest failed: {}", e);
@@ -156,6 +169,10 @@ impl FileWatcher {
                                     total: 0,
                                     message: format!("Lỗi xử lý: {}", e),
                                 };
+                                if let Some(ref app) = app_handle {
+                                    use tauri::Emitter;
+                                    let _ = app.emit("sync-status-changed", st.clone());
+                                }
                             }
                         }
                     }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
     CopySlash, Trash2, CheckCircle2, Film, Image as ImageIcon,
@@ -13,6 +13,188 @@ function formatSize(bytes: number): string {
     const sizes = ["B", "KB", "MB", "GB", "TB"];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + " " + sizes[i];
+}
+
+interface DuplicateItemCardProps {
+    item: any;
+    isVideo: boolean;
+    isKept: boolean;
+    onClick: () => void;
+}
+
+function DuplicateItemCard({
+    item,
+    isVideo,
+    isKept,
+    onClick,
+}: DuplicateItemCardProps) {
+    const width = isVideo ? 240 : 176;
+
+    return (
+        <div
+            className="snap-start shrink-0 flex flex-col gap-2 cursor-pointer hover-lift group"
+            style={{ width }}
+            onClick={onClick}
+        >
+            {/* Thumbnail */}
+            <div className={`relative rounded-xl overflow-hidden transition-all
+                ${isKept
+                    ? "ring-2 ring-emerald-500 ring-offset-2 ring-offset-background"
+                    : "ring-2 ring-destructive ring-offset-2 ring-offset-background opacity-70 hover:opacity-100"
+                }`}
+                style={{ aspectRatio: isVideo ? "16/9" : "4/3" }}
+            >
+                {(() => {
+                    let src: string | undefined;
+                    if (isVideo) {
+                        if (item.thumbnail_path) {
+                            if (item.thumbnail_path.startsWith("/") || item.thumbnail_path.match(/^[A-Za-z]:\\/)) {
+                                src = streamFileUrlSync(item.thumbnail_path);
+                            } else {
+                                src = localFileUrl(item.thumbnail_path);
+                            }
+                        }
+                    } else {
+                        src = localFileUrl(item.file_path);
+                    }
+
+                    if (src) {
+                        return (
+                            <img
+                                src={src}
+                                className={`w-full h-full ${isVideo ? "object-contain bg-black" : "object-cover"}`}
+                                loading="lazy"
+                            />
+                        );
+                    }
+
+                    return (
+                        <div className="w-full h-full flex items-center justify-center bg-muted/40 text-muted-foreground">
+                            <Film className="w-8 h-8" />
+                        </div>
+                    );
+                })()}
+
+                {/* Badge */}
+                <div className="absolute top-2 left-2 z-10">
+                    {isKept ? (
+                        <span className="bg-emerald-500/90 text-white backdrop-blur px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 shadow">
+                            <CheckCircle2 className="w-3 h-3" />
+                            GIỮ LẠI
+                        </span>
+                    ) : (
+                        <span className="bg-destructive/90 text-white backdrop-blur px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 shadow">
+                            <Trash2 className="w-3 h-3" />
+                            XÓA
+                        </span>
+                    )}
+                </div>
+
+                {/* Size badge */}
+                <div className="absolute bottom-2 right-2 bg-black/60 text-white backdrop-blur px-1.5 py-0.5 rounded text-[10px]">
+                    {formatSize(item.size)}
+                </div>
+            </div>
+
+            {/* Filename */}
+            <div className="text-xs text-muted-foreground truncate px-0.5">
+                {item.file_path.split("/").pop()}
+            </div>
+        </div>
+    );
+}
+
+interface DuplicateGroupRowProps {
+    group: DuplicateGroup;
+    isVideo: boolean;
+    deleted: Set<string>;
+    toggleMark: (groupId: string, mediaId: string) => void;
+}
+
+function DuplicateGroupRow({
+    group,
+    isVideo,
+    deleted,
+    toggleMark,
+}: DuplicateGroupRowProps) {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [range, setRange] = useState({ start: 0, end: 15 });
+
+    const itemWidth = isVideo ? 240 : 176;
+    const gap = 16; // gap-4 is 16px
+    const itemStep = itemWidth + gap;
+
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+
+        const updateRange = () => {
+            const scrollLeft = el.scrollLeft;
+            const containerWidth = el.clientWidth;
+            
+            const buffer = 8; // Render 8 items extra on each side to prevent flashes
+            const start = Math.max(0, Math.floor(scrollLeft / itemStep) - buffer);
+            const end = Math.min(group.items.length - 1, Math.ceil((scrollLeft + containerWidth) / itemStep) + buffer);
+
+            setRange(prev => {
+                if (prev.start === start && prev.end === end) return prev;
+                return { start, end };
+            });
+        };
+
+        // Initial update
+        updateRange();
+
+        // Listen for resize to update container width
+        const resizeObserver = new ResizeObserver(() => {
+            updateRange();
+        });
+        resizeObserver.observe(el);
+
+        const handleScroll = () => {
+            updateRange();
+        };
+
+        el.addEventListener("scroll", handleScroll, { passive: true });
+        return () => {
+            el.removeEventListener("scroll", handleScroll);
+            resizeObserver.disconnect();
+        };
+    }, [group.items.length, itemStep]);
+
+    const startSpacerWidth = range.start * itemStep - gap;
+    const remainingCount = group.items.length - 1 - range.end;
+    const endSpacerWidth = remainingCount * itemStep - gap;
+
+    return (
+        <div 
+            ref={containerRef}
+            className="p-5 flex gap-4 overflow-x-auto snap-x pb-6 select-none w-full scrollbar-thin scroll-smooth"
+        >
+            {range.start > 0 && startSpacerWidth > 0 && (
+                <div style={{ width: startSpacerWidth, flexShrink: 0 }} />
+            )}
+            
+            {group.items.slice(range.start, range.end + 1).map((item) => {
+                const isMarked = deleted.has(item.media_id);
+                const isKept = !isMarked;
+
+                return (
+                    <DuplicateItemCard
+                        key={item.media_id}
+                        item={item}
+                        isVideo={isVideo}
+                        isKept={isKept}
+                        onClick={() => toggleMark(group.group_id, item.media_id)}
+                    />
+                );
+            })}
+
+            {remainingCount > 0 && endSpacerWidth > 0 && (
+                <div style={{ width: endSpacerWidth, flexShrink: 0 }} />
+            )}
+        </div>
+    );
 }
 
 interface DuplicatesViewProps {
@@ -48,8 +230,8 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
                 initial[g.group_id] = new Set(g.items.slice(1).map(i => i.media_id));
             });
             setMarkedForDelete(initial);
-            // Expand all groups by default
-            setExpandedGroups(new Set(data.map(g => g.group_id)));
+            // Expand only first 5 groups by default to optimize initial render speed
+            setExpandedGroups(new Set(data.slice(0, 5).map(g => g.group_id)));
         } catch (err) {
             setError(String(err));
         } finally {
@@ -132,7 +314,7 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
     const isVideo = mediaType === "video";
 
     return (
-        <div className="flex-1 overflow-y-auto px-6 py-8 bg-background/50">
+        <div className="flex-1 overflow-y-auto px-6 py-8 bg-background/50 h-full will-change-scroll">
             <div className="max-w-5xl mx-auto space-y-8">
 
                 {/* Header */}
@@ -287,87 +469,12 @@ export function DuplicatesView({ mediaType }: DuplicatesViewProps) {
 
                                     {/* Items */}
                                     {isExpanded && (
-                                        <div className="p-5 flex gap-4 overflow-x-auto snap-x pb-6">
-                                            {group.items.map((item) => {
-                                                const isMarked = deleted.has(item.media_id);
-                                                const isKept = !isMarked;
-
-                                                return (
-                                                    <div
-                                                        key={item.media_id}
-                                                        className="snap-start shrink-0 flex flex-col gap-2 cursor-pointer hover-lift group"
-                                                        style={{ width: isVideo ? 240 : 176 }}
-                                                        onClick={() => toggleMark(group.group_id, item.media_id)}
-                                                    >
-                                                        {/* Thumbnail */}
-                                                        <div className={`relative rounded-xl overflow-hidden transition-all
-                                                            ${isKept
-                                                                ? "ring-2 ring-emerald-500 ring-offset-2 ring-offset-background"
-                                                                : "ring-2 ring-destructive ring-offset-2 ring-offset-background opacity-70 hover:opacity-100"
-                                                            }`}
-                                                            style={{ aspectRatio: isVideo ? "16/9" : "4/3" }}
-                                                        >
-                                                            {(() => {
-                                                                let src: string | undefined;
-                                                                if (isVideo) {
-                                                                    if (item.thumbnail_path) {
-                                                                        if (item.thumbnail_path.startsWith("/") || item.thumbnail_path.match(/^[A-Za-z]:\\/)) {
-                                                                            src = streamFileUrlSync(item.thumbnail_path);
-                                                                        } else {
-                                                                            src = localFileUrl(item.thumbnail_path);
-                                                                        }
-                                                                    }
-                                                                } else {
-                                                                    src = localFileUrl(item.file_path);
-                                                                }
-
-                                                                if (src) {
-                                                                    return (
-                                                                        <img
-                                                                            src={src}
-                                                                            className={`w-full h-full ${isVideo ? "object-contain bg-black" : "object-cover"}`}
-                                                                            loading="lazy"
-                                                                        />
-                                                                    );
-                                                                }
-
-                                                                // Fallback placeholder for videos without thumbnail
-                                                                return (
-                                                                    <div className="w-full h-full flex items-center justify-center bg-muted/40 text-muted-foreground">
-                                                                        <Film className="w-8 h-8" />
-                                                                    </div>
-                                                                );
-                                                            })()}
-
-                                                            {/* Badge */}
-                                                            <div className="absolute top-2 left-2 z-10">
-                                                                {isKept ? (
-                                                                    <span className="bg-emerald-500/90 text-white backdrop-blur px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 shadow">
-                                                                        <CheckCircle2 className="w-3 h-3" />
-                                                                        GIỮ LẠI
-                                                                    </span>
-                                                                ) : (
-                                                                    <span className="bg-destructive/90 text-white backdrop-blur px-2 py-0.5 rounded-full text-[10px] font-semibold flex items-center gap-1 shadow">
-                                                                        <Trash2 className="w-3 h-3" />
-                                                                        XÓA
-                                                                    </span>
-                                                                )}
-                                                            </div>
-
-                                                            {/* Size badge */}
-                                                            <div className="absolute bottom-2 right-2 bg-black/60 text-white backdrop-blur px-1.5 py-0.5 rounded text-[10px]">
-                                                                {formatSize(item.size)}
-                                                            </div>
-                                                        </div>
-
-                                                        {/* Filename */}
-                                                        <div className="text-xs text-muted-foreground truncate px-0.5">
-                                                            {item.file_path.split("/").pop()}
-                                                        </div>
-                                                    </div>
-                                                );
-                                            })}
-                                        </div>
+                                        <DuplicateGroupRow
+                                            group={group}
+                                            isVideo={isVideo}
+                                            deleted={deleted}
+                                            toggleMark={toggleMark}
+                                        />
                                     )}
                                 </div>
                             );

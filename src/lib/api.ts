@@ -13,8 +13,6 @@ export interface DetectedObject {
     class_name: string;
     conf: number;
     bbox: BboxInfo;
-    /** RLE mask: each [offset, length] means pixels at row-major indices [offset..offset+length) are set */
-    mask_rle?: [number, number][];
 }
 
 export interface DetectedFace {
@@ -70,6 +68,24 @@ export interface TimelineGroup {
     items: TimelineItem[];
 }
 
+export interface TimelinePageItem {
+    media_id: string;
+    file_path: string;
+    media_type: string;
+    width: number | null;
+    height: number | null;
+    created_at: string | null;
+    favorite: boolean;
+    thumbnail_path: string | null;
+}
+
+export interface TimelinePageResponse {
+    items: TimelinePageItem[];
+    total: number;
+    offset: number;
+    limit: number;
+}
+
 export interface PersonGroup {
     face_id: string;
     name: string | null;
@@ -101,7 +117,7 @@ export interface IngestSummary {
 }
 
 export interface SearchFilters {
-    object?: string;
+    objects?: string[];
     face?: string;
     month?: number;
     year?: number;
@@ -185,6 +201,18 @@ export const AuraSeekApi = {
 
     async getTimeline(limit?: number): Promise<TimelineGroup[]> {
         return invoke<TimelineGroup[]>("cmd_get_timeline", { limit });
+    },
+
+    async getTimelinePage(offset: number, limit: number): Promise<TimelinePageResponse> {
+        return invoke<TimelinePageResponse>("cmd_get_timeline_page", { offset, limit });
+    },
+
+    async generateMissingThumbnails(): Promise<number> {
+        return invoke<number>("cmd_generate_missing_thumbnails");
+    },
+
+    async generateMissingPersonThumbnails(): Promise<number> {
+        return invoke<number>("cmd_generate_missing_person_thumbnails");
     },
 
     async getPeople(): Promise<PersonGroup[]> {

@@ -33,18 +33,23 @@ pub fn letterbox_640_from_image(img: &image::DynamicImage) -> LetterboxResult {
 
     let resized = img.resize_exact(new_w, new_h, image::imageops::FilterType::Triangle);
     let rgb     = resized.to_rgb8();
+    let raw     = rgb.as_raw();
 
     let area     = (640 * 640) as usize;
     // fill padding with yolo-standard 114
     let mut blob = vec![114.0f32 / 255.0; 3 * area];
 
-    for (x, y, pixel) in rgb.enumerate_pixels() {
-        let px  = x + pad_left;
-        let py  = y + pad_top;
-        let idx = (py as usize * 640) + px as usize;
-        blob[idx]            = pixel[0] as f32 / 255.0; // r
-        blob[idx + area]     = pixel[1] as f32 / 255.0; // g
-        blob[idx + 2 * area] = pixel[2] as f32 / 255.0; // b
+    for y in 0..new_h {
+        let py = y + pad_top;
+        let src_row_offset = (y * new_w) as usize * 3;
+        let dst_row_offset = (py * 640 + pad_left) as usize;
+        for x in 0..new_w as usize {
+            let src_idx = src_row_offset + x * 3;
+            let dst_idx = dst_row_offset + x;
+            blob[dst_idx]            = raw[src_idx] as f32 / 255.0;     // r
+            blob[dst_idx + area]     = raw[src_idx + 1] as f32 / 255.0; // g
+            blob[dst_idx + 2 * area] = raw[src_idx + 2] as f32 / 255.0; // b
+        }
     }
 
     LetterboxResult { blob, ratio, pad_left, pad_top, orig_size: (orig_h, orig_w) }

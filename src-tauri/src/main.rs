@@ -33,9 +33,26 @@ pub fn run() {
             app.state::<AppState>().stream_port.store(port, std::sync::atomic::Ordering::Relaxed);
             crate::log_info!("🎥 Video stream server started on port {}", port);
 
-            let base_data_dir = app.path().app_data_dir()
+            let mut base_data_dir = app.path().app_data_dir()
                 .unwrap_or_else(|_| crate::platform::paths::fallback_data_dir());
+
+            #[cfg(target_os = "macos")]
+            {
+                let legacy_path = crate::platform::paths::dirs_home().join("Library").join("Application Support").join("auraseek");
+                if legacy_path.join("auraseek.sqlite3").exists() {
+                    base_data_dir = legacy_path;
+                } else {
+                    if std::fs::create_dir_all(&base_data_dir).is_err() ||
+                       std::fs::write(base_data_dir.join(".write_test"), b"test").is_err() {
+                        base_data_dir = legacy_path;
+                    } else {
+                        let _ = std::fs::remove_file(base_data_dir.join(".write_test"));
+                    }
+                }
+            }
+
             crate::log_info!("📁 App data dir: {}", base_data_dir.display());
+            crate::platform::paths::set_tauri_data_dir(base_data_dir.clone());
 
             let state = app.state::<AppState>();
             *state.data_dir.lock().unwrap() = base_data_dir;
@@ -90,6 +107,7 @@ pub fn run() {
             interface::commands::people::cmd_merge_people,
             interface::commands::people::cmd_delete_person,
             interface::commands::people::cmd_remove_face_from_person,
+            interface::commands::people::cmd_generate_missing_person_thumbnails,
             interface::commands::timeline::cmd_toggle_favorite,
             interface::commands::timeline::cmd_get_timeline,
             interface::commands::timeline::cmd_move_to_trash,
@@ -100,6 +118,8 @@ pub fn run() {
             interface::commands::timeline::cmd_hide_photo,
             interface::commands::timeline::cmd_unhide_photo,
             interface::commands::timeline::cmd_get_hidden_photos,
+            interface::commands::timeline::cmd_get_timeline_page,
+            interface::commands::timeline::cmd_generate_missing_thumbnails,
             interface::commands::albums::cmd_create_album,
             interface::commands::albums::cmd_get_albums,
             interface::commands::albums::cmd_add_to_album,
@@ -118,6 +138,26 @@ pub fn run() {
 }
 
 fn main() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        // 1. Detect if we are running inside an AppImage container
+        if let Ok(appdir) = std::env::var("APPDIR") {
+            // Fix WebKitGTK Process Paths dynamically
+            let webkit_path = format!("{}/usr/lib/x86_64-linux-gnu/webkit2gtk-4.1", appdir);
+            let layout_path = format!("{}/usr/share/webkit2gtk-4.1", appdir);
+            std::env::set_var("WEBKIT_EXEC_PATH", &webkit_path);
+            std::env::set_var("WEBKIT_EXTRA_LAYOUT_PATH", &layout_path);
+
+            // Fix sandbox conflict in nested container environments
+            std::env::set_var("WEBKIT_FORCE_SANDBOX", "0");
+        }
+
+        // 2. Safe Wayland EGL fallback setup
+        if std::env::var("GDK_BACKEND").is_err() {
+            std::env::set_var("GDK_BACKEND", "wayland,x11");
+        }
+    }
+
     let _ = dotenvy::dotenv();
     let cfg = AppConfig::global().clone();
     let log_path = cfg.log_path.to_string_lossy().to_string();

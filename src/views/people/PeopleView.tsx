@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import type { PersonGroup } from "@/lib/api";
-import { localFileUrl, streamFileUrl, AuraSeekApi } from "@/lib/api";
+import { localFileUrl, AuraSeekApi } from "@/lib/api";
 import { Pencil, Check, X, User, Trash2, CheckCircle2, Circle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/ConfirmDialog";
@@ -40,20 +40,42 @@ function FaceCropAvatar({
         const faceCy = bbox.y + bbox.h / 2;
         const cropSize = Math.max(bbox.w, bbox.h) * 2;
 
+        const clampedSize = Math.min(cropSize, naturalW, naturalH);
+        if (clampedSize <= 0 || !isFinite(clampedSize)) {
+            setBgStyle({
+                backgroundImage: `url("${imageUrl}")`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+            });
+            setLoaded(true);
+            return;
+        }
+
         let cropX = faceCx - cropSize / 2;
         let cropY = faceCy - cropSize / 2;
-        const clampedSize = Math.min(cropSize, naturalW, naturalH);
         cropX = Math.max(0, Math.min(cropX, naturalW - clampedSize));
         cropY = Math.max(0, Math.min(cropY, naturalH - clampedSize));
 
         const scale = AVATAR_PX / clampedSize;
         const bgW = naturalW * scale;
         const bgH = naturalH * scale;
+        const posX = -cropX * scale;
+        const posY = -cropY * scale;
+
+        if (!isFinite(scale) || !isFinite(bgW) || !isFinite(bgH) || !isFinite(posX) || !isFinite(posY)) {
+            setBgStyle({
+                backgroundImage: `url("${imageUrl}")`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+            });
+            setLoaded(true);
+            return;
+        }
 
         setBgStyle({
             backgroundImage: `url("${imageUrl}")`,
             backgroundSize: `${bgW}px ${bgH}px`,
-            backgroundPosition: `${-cropX * scale}px ${-cropY * scale}px`,
+            backgroundPosition: `${posX}px ${posY}px`,
             backgroundRepeat: "no-repeat",
         });
         setLoaded(true);
@@ -64,13 +86,23 @@ function FaceCropAvatar({
         setLoaded(false);
         setBgStyle(null);
 
+        if (!bbox) {
+            setBgStyle({
+                backgroundImage: `url("${imageUrl}")`,
+                backgroundSize: "cover",
+                backgroundPosition: "center",
+            });
+            setLoaded(true);
+            return;
+        }
+
         const img = new Image();
         img.onload = () => computeCrop(img.naturalWidth, img.naturalHeight);
         img.onerror = () => setFailed(true);
         img.src = imageUrl;
 
         return () => { img.onload = null; img.onerror = null; };
-    }, [imageUrl, computeCrop]);
+    }, [imageUrl, bbox, computeCrop]);
 
     if (failed) {
         return (
@@ -111,8 +143,38 @@ function PersonCard({
     isSelected: boolean;
     onToggleSelect: (id: string) => void;
 }) {
+    const [isInViewport, setIsInViewport] = useState(false);
+    const cardRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        const el = cardRef.current;
+        if (!el) return;
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                if (entries && entries[0]) {
+                    setIsInViewport(entries[0].isIntersecting);
+                }
+            },
+            {
+                rootMargin: "300px",
+            }
+        );
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
+
     const [editing, setEditing] = useState(false);
     const [name, setName] = useState(person.name || "");
+
+    const rawPath = person.thumbnail || person.cover_path;
+    const [imageUrl, setImageUrl] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (!isInViewport) return;
+        if (!rawPath) { setImageUrl(null); return; }
+        setImageUrl(localFileUrl(rawPath));
+    }, [rawPath, isInViewport]);
 
     const handleSave = async () => {
         if (!name.trim()) return;
@@ -126,17 +188,6 @@ function PersonCard({
     };
 
     const displayName = person.name || `Người ${index + 1}`;
-    const rawPath = person.thumbnail || person.cover_path;
-    const [imageUrl, setImageUrl] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (!rawPath) { setImageUrl(null); return; }
-        if (rawPath.startsWith("/") || rawPath.match(/^[A-Za-z]:\\/)) {
-            streamFileUrl(rawPath).then(url => setImageUrl(url));
-        } else {
-            setImageUrl(localFileUrl(rawPath));
-        }
-    }, [rawPath]);
 
     const handleClick = () => {
         if (isDeleteMode) {
@@ -146,8 +197,26 @@ function PersonCard({
         }
     };
 
+    if (!isInViewport) {
+        return (
+            <div
+                ref={cardRef}
+                className="group flex flex-col items-center gap-3"
+            >
+                <div
+                    className="rounded-full bg-zinc-100 dark:bg-zinc-900/60 border border-zinc-200/50 dark:border-zinc-800/50 animate-pulse"
+                    style={{ width: AVATAR_PX, height: AVATAR_PX }}
+                />
+                <div className="h-4 w-20 bg-zinc-100 dark:bg-zinc-900/60 rounded animate-pulse" />
+                <div className="h-3 w-12 bg-zinc-100 dark:bg-zinc-900/60 rounded animate-pulse" />
+            </div>
+        );
+    }
+
+    const isCroppedFace = !!(person.thumbnail && person.thumbnail.includes("face_"));
+
     return (
-        <div className={`group flex flex-col items-center gap-3 transition-all duration-300 ${isDeleteMode ? "scale-95 hover:scale-100" : ""}`}>
+        <div ref={cardRef} className={`group flex flex-col items-center gap-3 transition-all duration-300 ${isDeleteMode ? "scale-95 hover:scale-100" : ""}`}>
             <div
                 className={`relative rounded-full overflow-hidden bg-muted transition-all duration-300 ring-4 cursor-pointer shadow-sm hover:shadow-md ${
                     isSelected 
@@ -162,7 +231,7 @@ function PersonCard({
                 {imageUrl ? (
                     <FaceCropAvatar
                         imageUrl={imageUrl}
-                        bbox={person.face_bbox}
+                        bbox={isCroppedFace ? null : person.face_bbox}
                         alt={displayName}
                     />
                 ) : (
@@ -215,18 +284,22 @@ function PersonCard({
 }
 
 export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
-    const [localPeople, setLocalPeople] = useState<PersonGroup[]>(people);
+    const [localPeople, setLocalPeople] = useState<PersonGroup[]>(people || []);
     const [isDeleteMode, setIsDeleteMode] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     useEffect(() => {
-        setLocalPeople(people);
+        setLocalPeople(people || []);
     }, [people]);
+
+    // Only display persons that appear in 2+ photos — single-photo detections are usually
+    // false-positives or too ambiguous to be useful as a person group.
+    const visiblePeople = (localPeople || []).filter(p => p && p.photo_count >= 2);
 
     const handleRename = (faceId: string, name: string) => {
         setLocalPeople(prev =>
-            prev.map(p => p.face_id === faceId ? { ...p, name } : p)
+            (prev || []).map(p => p.face_id === faceId ? { ...p, name } : p)
         );
     };
 
@@ -244,7 +317,7 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
         try {
             await Promise.all(idsToDelete.map(id => AuraSeekApi.deletePerson(id)));
             // Refresh local state
-            setLocalPeople(prev => prev.filter(p => !selectedIds.has(p.face_id)));
+            setLocalPeople(prev => (prev || []).filter(p => !selectedIds.has(p.face_id)));
             setIsDeleteMode(false);
             setSelectedIds(new Set());
             setShowDeleteConfirm(false);
@@ -254,7 +327,7 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
     };
 
     return (
-        <div className="flex-1 overflow-y-auto px-6 py-8 will-change-scroll">
+        <div className="w-full h-full overflow-y-auto px-6 py-8 will-change-scroll">
             <div className="max-w-7xl mx-auto space-y-8">
                 <div className="flex items-end justify-between">
                     <div>
@@ -263,7 +336,7 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
                             Tự động nhóm khuôn mặt bằng AI. Click vào tên để đặt tên dễ nhớ hơn.
                         </p>
                     </div>
-                    {localPeople.length > 0 && (
+                    {(localPeople || []).length > 0 && (
                         <div className="flex items-center gap-2">
                             {isDeleteMode ? (
                                 <>
@@ -300,15 +373,15 @@ export function PeopleView({ people = [], onNavigate }: PeopleViewProps) {
                     )}
                 </div>
 
-                {localPeople.length === 0 ? (
+                {visiblePeople.length === 0 ? (
                     <div className="text-center py-20 text-muted-foreground opacity-60">
                         <div className="text-5xl mb-4">🤖</div>
-                        <p className="font-medium">Chưa có khuôn mặt nào được nhận diện</p>
-                        <p className="text-sm mt-1">Hãy quét thư viện ảnh để AI nhận diện khuôn mặt tự động</p>
+                        <p className="font-medium">{(localPeople || []).length === 0 ? "Chưa có khuôn mặt nào được nhận diện" : "Chưa đủ dữ liệu"}</p>
+                        <p className="text-sm mt-1">{(localPeople || []).length === 0 ? "Hãy quét thư viện ảnh để AI nhận diện khuôn mặt tự động" : "Cần ít nhất 2 ảnh có cùng người để hiển thị trong danh sách"}</p>
                     </div>
                 ) : (
                     <div className="grid grid-cols-2 min-[500px]:grid-cols-3 sm:grid-cols-4 md:grid-cols-5 lg:grid-cols-6 xl:grid-cols-8 gap-y-10 gap-x-4">
-                        {localPeople.map((person, i) => (
+                        {visiblePeople.map((person, i) => (
                             <PersonCard
                                 key={person.face_id}
                                 person={person}

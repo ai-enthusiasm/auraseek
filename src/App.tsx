@@ -15,7 +15,8 @@ import { FirstRunModal } from "@/components/common/FirstRunModal";
 import { EVENT_FORCE_FIRST_RUN_UI, SESSION_POST_DB_RESET } from "@/components/common/SettingsModal";
 import { LandingPage } from "@/views/LandingPage";
 import ModelDownloadScreen, { type ModelDownloadEvent } from "@/components/common/ModelDownloadScreen";
-import { AuraSeekApi, localFileUrl, streamFileUrlSync, warmStreamPortCache, type SearchResult, type TimelineGroup, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
+import { ErrorBoundary } from "@/components/common/ErrorBoundary";
+import { AuraSeekApi, localFileUrl, streamFileUrlSync, warmStreamPortCache, type SearchResult, type PersonGroup, type SearchFilters as ApiFilters, type SyncStatus } from "@/lib/api";
 import type { Photo } from "@/types/photo.type";
 
 type AppRoute = {
@@ -24,7 +25,7 @@ type AppRoute = {
 };
 
 export type ActiveFilters = {
-  object?: string;
+  objects?: string[];
   face?: string;
   month?: number;
   year?: number;
@@ -43,7 +44,6 @@ function App() {
   const [needsDownload, setNeedsDownload] = useState(false);
 
   // Data state
-  const [timelineGroups, setTimelineGroups] = useState<TimelineGroup[]>([]);
   const [people, setPeople] = useState<PersonGroup[]>([]);
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [isSearching, setIsSearching] = useState(false);
@@ -161,6 +161,24 @@ function App() {
             void loadTimeline({ blocking: true }).then(() => {
               if (initGenerationRef.current !== initGenAtStart) return;
               triggerAutoScan();
+              // Generate thumbnails for images that were ingested before thumbnail support
+              AuraSeekApi.generateMissingThumbnails()
+                .then((count) => {
+                  if (count > 0) {
+                    console.log(`[AuraSeek] 🖼️ Generated ${count} missing thumbnails`);
+                    loadTimeline(); // Refresh to show new thumbnails
+                  }
+                })
+                .catch(() => { /* non-critical */ });
+
+              // Generate thumbnails for persons that have no cropped face thumbnail
+              AuraSeekApi.generateMissingPersonThumbnails()
+                .then((count) => {
+                  if (count > 0) {
+                    console.log(`[AuraSeek] 👤 Generated ${count} missing person face thumbnails`);
+                  }
+                })
+                .catch(() => { /* non-critical */ });
             });
           }
         }
@@ -181,7 +199,7 @@ function App() {
   const triggerAutoScan = useCallback(async () => {
     try {
       await AuraSeekApi.autoScan();
-      setSyncStatus({ state: "syncing", processed: 0, total: 0, message: "Đang đồng bộ dữ liệu..." });
+      // Do not manually override state here to avoid race conditions with fast scans
     } catch (e) {
       console.warn("[AuraSeek] ⚠️ Auto-scan failed:", e);
       setSyncStatus({ state: "error", processed: 0, total: 0, message: String(e) });
@@ -193,7 +211,6 @@ function App() {
     initGenerationRef.current += 1;
     setTimelineBlockingLoad(false);
     setSourceDir("");
-    setTimelineGroups([]);
     setPhotos([]);
     setPeople([]);
     setSearchResults([]);
@@ -212,7 +229,6 @@ function App() {
 
       const groups = await AuraSeekApi.getTimeline();
 
-      setTimelineGroups(groups);
       console.log("[AuraSeek] 📅 Timeline loaded:", groups.length, "groups");
 
       const isAbsThumbPath = (p: string) =>
@@ -268,23 +284,32 @@ function App() {
     triggerAutoScan();
   }, [loadTimeline, triggerAutoScan]);
 
-  // Global perpetual SyncStatus poller (essential for fs_watcher background events)
+  // Global event listener for SyncStatus (essential for fs_watcher background events)
   useEffect(() => {
     if (!isInitialized) return;
     let lastState = syncStatus?.state;
-    const iv = setInterval(async () => {
-      try {
-        const st = await AuraSeekApi.getSyncStatus();
-        setSyncStatus(st);
-        if (st.state === "done" && lastState === "syncing") {
-          // Transitioned from syncing to done -> refreshing UI automatically
-          await loadTimeline();
-          window.dispatchEvent(new Event("refresh_photos"));
-        }
-        lastState = st.state;
-      } catch { }
-    }, 2000);
-    return () => clearInterval(iv);
+
+    // Fetch initial status once on mount
+    AuraSeekApi.getSyncStatus().then((st) => {
+      setSyncStatus(st);
+      lastState = st.state;
+    }).catch(() => {});
+
+    const unlistenPromise = listen("sync-status-changed", (event) => {
+      const st = event.payload as SyncStatus;
+      setSyncStatus(st);
+      if (st.state === "done" && lastState === "syncing") {
+        // Transitioned from syncing to done -> refreshing UI automatically
+        loadTimeline();
+        loadPeople();
+        window.dispatchEvent(new Event("refresh_photos"));
+      }
+      lastState = st.state;
+    });
+
+    return () => {
+      unlistenPromise.then(unlisten => unlisten()).catch(() => {});
+    };
   }, [isInitialized, loadTimeline, syncStatus?.state]);
 
   const handleReload = useCallback(() => {
@@ -370,7 +395,7 @@ function App() {
 
       if (newCount > 0) {
         console.log(`[AuraSeek] ✅ Added ${newCount} new files.`);
-        await loadTimeline();
+        await Promise.all([loadTimeline(), loadPeople()]);
         window.dispatchEvent(new Event("refresh_photos"));
       } else {
         console.log("[AuraSeek] ⚠️ No new files added or all were duplicates.");
@@ -433,7 +458,7 @@ function App() {
     }
     setIsSearching(true);
     const filters: ApiFilters = {
-      object: filtersSource.object,
+      objects: filtersSource.objects,
       face: filtersSource.face,
       month: filtersSource.month,
       year: filtersSource.year,
@@ -449,8 +474,8 @@ function App() {
         results = await AuraSeekApi.searchImage(imagePath, filters);
       } else if (queryText) {
         results = await AuraSeekApi.searchText(queryText, filters);
-      } else if (filters.object) {
-        results = await AuraSeekApi.searchObject(filters.object, filters);
+      } else if (filters.objects && filters.objects.length > 0) {
+        results = await AuraSeekApi.searchObject(filters.objects[0], filters);
       } else if (filters.face) {
         results = await AuraSeekApi.searchFace(filters.face, filters);
       } else {
@@ -465,13 +490,6 @@ function App() {
       setSearchResults([]);
       setRoute({ view: "search_results" });
     } finally {
-      // Nếu có file tạm cho search image, xoá sau khi search xong
-      if (searchTempPathRef.current) {
-        AuraSeekApi.deleteFile(searchTempPathRef.current).catch(() => {});
-        searchTempPathRef.current = null;
-        (window as any).__AURASEEK_SEARCH_TMP_PATH__ = null;
-        setSearchImagePath(null);
-      }
       setIsSearching(false);
     }
   }, [activeFilters]);
@@ -486,7 +504,20 @@ function App() {
     if (name !== undefined) {
       setSearchImageName(name);
     }
-  }, []);
+    
+    // Automatically trigger search when an image is selected or cleared
+    const hasFilters = activeFilters && Object.values(activeFilters).some(v => v !== undefined);
+    if (path) {
+      handleSearch(searchQuery, path, activeFilters);
+    } else {
+      if (searchQuery.trim() || hasFilters) {
+        handleSearch(searchQuery, null, activeFilters);
+      } else {
+        setSearchResults([]);
+        setRoute({ view: "timeline" });
+      }
+    }
+  }, [handleSearch, searchQuery, activeFilters]);
 
   const handleFiltersChange = useCallback((filters: ActiveFilters) => {
     setActiveFilters(filters);
@@ -495,6 +526,7 @@ function App() {
       handleSearch(searchQuery, searchImagePath, filters);
     } else {
       setSearchResults([]);
+      setRoute({ view: "timeline" });
     }
   }, [handleSearch, searchImagePath, searchQuery]);
 
@@ -519,9 +551,16 @@ function App() {
     window.addEventListener("refresh_photos", handler);
 
     // When backend ingest pipeline reports per-file progress (auto-scan or manual),
-    // refresh the timeline so new photos/videos appear progressively.
+    // refresh the timeline so new photos/videos appear progressively, throttled to max once every 5 seconds.
+    const lastProgressRefresh = { current: 0 };
     const unlistenPromise = listen("ingest-progress", () => {
-      loadTimeline();
+      const now = Date.now();
+      if (now - lastProgressRefresh.current > 1000) {
+        lastProgressRefresh.current = now;
+        loadTimeline();
+        loadPeople();
+        window.dispatchEvent(new Event("refresh_photos"));
+      }
     });
 
     // Optimistic favorite handler for instant UI feedback
@@ -530,12 +569,6 @@ function App() {
       setPhotos(prev => prev.map(p =>
         p.id === id ? { ...p, favorite: !p.favorite } : p
       ));
-      setTimelineGroups(prev => prev.map(group => ({
-        ...group,
-        items: group.items.map(item =>
-          item.media_id === id ? { ...item, favorite: !item.favorite } : item
-        )
-      })));
     };
     window.addEventListener("photo_toggle_favorite", favoriteHandler);
 
@@ -544,7 +577,7 @@ function App() {
       window.removeEventListener("photo_toggle_favorite", favoriteHandler);
       unlistenPromise.then(unlisten => unlisten()).catch(() => {});
     };
-  }, [loadTimeline]);
+  }, [loadTimeline, loadPeople]);
 
   // Reset DB có thể phát từ Rust; tách effect (không phụ thuộc loadTimeline) để tránh race đăng ký/hủy listen.
   useEffect(() => {
@@ -646,8 +679,8 @@ function App() {
       case "videos":
         return (
           <TimelineView
-            timelineGroups={timelineGroups}
-            photos={photos}
+            timelineGroups={[]}
+            photos={[]}
             searchQuery={searchQuery}
             isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
@@ -661,8 +694,8 @@ function App() {
       case "all":
         return (
           <TimelineView
-            timelineGroups={timelineGroups}
-            photos={photos}
+            timelineGroups={[]}
+            photos={[]}
             searchQuery={searchQuery}
             isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
@@ -672,8 +705,8 @@ function App() {
       default:
         return (
           <TimelineView
-            timelineGroups={timelineGroups}
-            photos={photos}
+            timelineGroups={[]}
+            photos={[]}
             searchQuery={searchQuery}
             isLoading={!isInitialized || timelineBlockingLoad}
             selectionMode={selectionMode}
@@ -733,7 +766,9 @@ function App() {
           totalImages={photos.length}
           onReload={handleReload}
         >
-          {renderView()}
+          <ErrorBoundary>
+            {renderView()}
+          </ErrorBoundary>
         </NewLayout>
       </TooltipProvider>
     </SelectionProvider>

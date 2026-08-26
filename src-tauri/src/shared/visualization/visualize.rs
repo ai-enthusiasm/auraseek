@@ -100,57 +100,7 @@ pub fn draw_detections(
     pixels.copy_from_slice(&img.into_raw());
 }
 
-/// draw segmentation mask overlay
-pub fn draw_segmentation(
-    pixels:  &mut Vec<u8>,
-    _w:      u32,
-    _h:      u32,
-    records: &[DetectionRecord],
-    alpha:   f32,
-) {
-    for (idx, rec) in records.iter().enumerate() {
-        let (mr, mg, mb) = palette(idx);
-        for &(offset, length) in &rec.mask_rle {
-            for i in offset..(offset + length) {
-                let base = i as usize * 3;
-                if base + 2 < pixels.len() {
-                    pixels[base]     = (pixels[base]     as f32 * (1.0 - alpha) + mr as f32 * alpha) as u8;
-                    pixels[base + 1] = (pixels[base + 1] as f32 * (1.0 - alpha) + mg as f32 * alpha) as u8;
-                    pixels[base + 2] = (pixels[base + 2] as f32 * (1.0 - alpha) + mb as f32 * alpha) as u8;
-                }
-            }
-        }
-    }
-}
 
-/// export white masks on transparent background
-pub fn extract_masks(
-    records: &[DetectionRecord],
-    w:       u32,
-    h:       u32,
-    out_dir: &str,
-) -> Result<()> {
-    let total = (w * h) as usize;
-    for (i, rec) in records.iter().enumerate() {
-        let mut rgba = vec![0u8; total * 4];
-
-        for &(offset, length) in &rec.mask_rle {
-            for px in offset..(offset + length) {
-                let base = px as usize * 4;
-                if base + 3 < rgba.len() {
-                    rgba[base]     = 255;
-                    rgba[base + 1] = 255;
-                    rgba[base + 2] = 255;
-                    rgba[base + 3] = 255; 
-                }
-            }
-        }
-
-        let filename = format!("{}/mask_{}_{}.png", out_dir, i, rec.class_name);
-        save_rgba(rgba, w, h, &filename)?;
-    }
-    Ok(())
-}
 
 /// draw face detections
 pub fn draw_faces(

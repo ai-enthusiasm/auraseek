@@ -12,7 +12,7 @@ pub async fn cmd_get_source_dir(state: State<'_, AppState>) -> Result<String, St
 }
 
 #[tauri::command]
-pub async fn cmd_set_source_dir(dir: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn cmd_set_source_dir(app: tauri::AppHandle, dir: String, state: State<'_, AppState>) -> Result<(), String> {
     {
         let guard = state.sqlite.lock().unwrap();
         let db = guard.as_ref().ok_or("DB not initialized")?;
@@ -20,7 +20,7 @@ pub async fn cmd_set_source_dir(dir: String, state: State<'_, AppState>) -> Resu
     }
     *state.source_dir.lock().await = dir.clone();
     crate::log_info!("📂 source_dir updated to: {}", dir);
-    restart_fs_watcher(&state, &dir);
+    restart_fs_watcher(&state, &dir, Some(app));
     Ok(())
 }
 
@@ -56,9 +56,14 @@ pub async fn cmd_auto_scan(
     let epoch_at_invoke = state.library_reset_epoch.load(Ordering::SeqCst);
 
     crate::log_info!("🔄 Auto-scan starting for: {}", dir);
-    { let mut st = sync_arc.lock().await; *st = SyncStatus { state: "syncing".into(), processed: 0, total: 0, message: "Đang đồng bộ dữ liệu...".into() }; }
+    {
+        let mut st = sync_arc.lock().await;
+        *st = SyncStatus { state: "syncing".into(), processed: 0, total: 0, message: "Đang đồng bộ dữ liệu...".into() };
+        use tauri::Emitter;
+        let _ = app.emit("sync-status-changed", st.clone());
+    }
 
-    restart_fs_watcher(&state, &source_dir);
+    restart_fs_watcher(&state, &source_dir, Some(app.clone()));
 
     let thumb_cache_dir = state.data_dir.lock().unwrap().join("thumbnails");
     let thumb_cache = Some(thumb_cache_dir);
@@ -69,6 +74,8 @@ pub async fn cmd_auto_scan(
             crate::log_info!("🛑 Auto-scan task dropped (library reset / stale epoch)");
             let mut st = sync_arc.lock().await;
             *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: String::new() };
+            use tauri::Emitter;
+            let _ = app_handle.emit("sync-status-changed", st.clone());
             return;
         }
         {
@@ -82,7 +89,7 @@ pub async fn cmd_auto_scan(
             sqlite_arc,
             qdrant_arc,
             engine_arc,
-            Some(app_handle),
+            Some(app_handle.clone()),
             thumb_cache,
             abort_flag,
             epoch_arc.clone(),
@@ -101,6 +108,8 @@ pub async fn cmd_auto_scan(
                 *st = SyncStatus { state: "error".into(), processed: 0, total: 0, message: format!("Lỗi đồng bộ: {}", e) };
             }
         }
+        use tauri::Emitter;
+        let _ = app_handle.emit("sync-status-changed", st.clone());
     });
     Ok("Sync started".into())
 }
@@ -132,6 +141,7 @@ pub async fn cmd_scan_folder(
 
 #[tauri::command]
 pub async fn cmd_ingest_files(
+    app: tauri::AppHandle,
     file_paths: Vec<String>, state: State<'_, AppState>,
 ) -> Result<IngestSummary, String> {
     let source_dir = state.source_dir.lock().await.clone();
@@ -140,12 +150,13 @@ pub async fn cmd_ingest_files(
     let sqlite_arc = state.sqlite.clone();
     let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = Some(state.data_dir.lock().unwrap().join("thumbnails"));
-    crate::app::ingest::ingest_files(file_paths, source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir)
+    crate::app::ingest::ingest_files(file_paths, source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir, Some(app))
         .await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_ingest_image_data(
+    app: tauri::AppHandle,
     data: String, ext: String, state: State<'_, AppState>,
 ) -> Result<IngestSummary, String> {
     use base64::Engine as _;
@@ -164,7 +175,7 @@ pub async fn cmd_ingest_image_data(
     let sqlite_arc = state.sqlite.clone();
     let qdrant_arc = state.qdrant_client.clone();
     let thumb_cache_dir = Some(state.data_dir.lock().unwrap().join("thumbnails"));
-    crate::app::ingest::ingest_files(vec![dest.to_string_lossy().to_string()], source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir)
+    crate::app::ingest::ingest_files(vec![dest.to_string_lossy().to_string()], source_dir, sqlite_arc, qdrant_arc, engine_arc, thumb_cache_dir, Some(app))
         .await.map_err(|e| e.to_string())
 }
 
@@ -184,7 +195,12 @@ pub async fn cmd_reset_database(app: tauri::AppHandle, state: State<'_, AppState
     let _new_epoch = state.bump_library_reset_epoch();
 
     state.abort_sync.store(true, std::sync::atomic::Ordering::SeqCst);
-    { let mut st = state.sync_status.lock().await; *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: "".into() }; }
+    {
+        let mut st = state.sync_status.lock().await;
+        *st = SyncStatus { state: "idle".into(), processed: 0, total: 0, message: "".into() };
+        use tauri::Emitter;
+        let _ = app.emit("sync-status-changed", st.clone());
+    }
 
     if let Ok(mut guard) = state.watcher_handle.lock() {
         if let Some(handle) = guard.take() { handle.stop(); crate::log_info!("👁️  FS watcher stopped due to database reset"); }
@@ -204,7 +220,9 @@ pub async fn cmd_reset_database(app: tauri::AppHandle, state: State<'_, AppState
         let qdrant_guard = state.qdrant_client.lock().await;
         if let Some(ref client) = *qdrant_guard {
             let _ = client.delete_collection(collection).await;
+            let _ = client.delete_collection(crate::core::config::QDRANT_FACE_COLLECTION).await;
             let _ = crate::infrastructure::database::QdrantService::ensure_collection(client, collection, 384).await;
+            let _ = crate::infrastructure::database::QdrantService::ensure_collection(client, crate::core::config::QDRANT_FACE_COLLECTION, 512).await;
         }
     }
 

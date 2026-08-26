@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button";
 import { Filter, Calendar, Users, FileType, Tag, X, Loader2, SearchX } from "lucide-react";
 import { useState, useEffect } from "react";
 import type { ActiveFilters } from "@/App";
-import { AuraSeekApi, type PersonGroup } from "@/lib/api";
+import { AuraSeekApi, type PersonGroup, localFileUrl } from "@/lib/api";
 
 const MONTHS = [
     { label: "Tháng 1", value: 1 }, { label: "Tháng 2", value: 2 },
@@ -27,6 +27,102 @@ interface FilterPanelProps {
     onFiltersChange?: (filters: ActiveFilters) => void;
 }
 
+function MiniFaceCropAvatar({
+    rawPath,
+    bbox,
+}: {
+    rawPath: string;
+    bbox: { x: number; y: number; w: number; h: number } | null;
+}) {
+    const [bgStyle, setBgStyle] = useState<React.CSSProperties | null>(null);
+
+    useEffect(() => {
+        if (!rawPath) return;
+
+        let cancelled = false;
+        const resolveUrl = async () => {
+            const url = localFileUrl(rawPath);
+            if (cancelled) return;
+
+            const img = new Image();
+            img.onload = () => {
+                if (cancelled) return;
+                const naturalW = img.naturalWidth;
+                const naturalH = img.naturalHeight;
+
+                if (!bbox || !naturalW || !naturalH) {
+                    setBgStyle({
+                        backgroundImage: `url("${url}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                    });
+                    return;
+                }
+
+                const faceCx = bbox.x + bbox.w / 2;
+                const faceCy = bbox.y + bbox.h / 2;
+                const cropSize = Math.max(bbox.w, bbox.h) * 2;
+
+                const clampedSize = Math.min(cropSize, naturalW, naturalH);
+                if (clampedSize <= 0 || !isFinite(clampedSize)) {
+                    setBgStyle({
+                        backgroundImage: `url("${url}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                    });
+                    return;
+                }
+
+                let cropX = faceCx - cropSize / 2;
+                let cropY = faceCy - cropSize / 2;
+                cropX = Math.max(0, Math.min(cropX, naturalW - clampedSize));
+                cropY = Math.max(0, Math.min(cropY, naturalH - clampedSize));
+
+                const targetSize = 20; // 20px for w-5 h-5
+                const scale = targetSize / clampedSize;
+                const bgW = naturalW * scale;
+                const bgH = naturalH * scale;
+                const posX = -cropX * scale;
+                const posY = -cropY * scale;
+
+                if (!isFinite(scale) || !isFinite(bgW) || !isFinite(bgH) || !isFinite(posX) || !isFinite(posY)) {
+                    setBgStyle({
+                        backgroundImage: `url("${url}")`,
+                        backgroundSize: "cover",
+                        backgroundPosition: "center",
+                    });
+                    return;
+                }
+
+                setBgStyle({
+                    backgroundImage: `url("${url}")`,
+                    backgroundSize: `${bgW}px ${bgH}px`,
+                    backgroundPosition: `${posX}px ${posY}px`,
+                    backgroundRepeat: "no-repeat",
+                });
+            };
+            img.src = url;
+        };
+
+        resolveUrl();
+
+        return () => {
+            cancelled = true;
+        };
+    }, [rawPath, bbox]);
+
+    if (!bgStyle) {
+        return <div className="w-5 h-5 rounded-full bg-muted animate-pulse shrink-0" />;
+    }
+
+    return (
+        <div
+            className="w-5 h-5 rounded-full shrink-0 border border-border/10"
+            style={bgStyle}
+        />
+    );
+}
+
 export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange }: FilterPanelProps) {
     const [localFilters, setLocalFilters] = useState<ActiveFilters>(activeFilters || {});
     const [objectSearch, setObjectSearch] = useState("");
@@ -40,6 +136,14 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
         if (open) {
             setLocalFilters(activeFilters || {});
             loadDbData();
+
+            const handleRefresh = () => {
+                loadDbData();
+            };
+            window.addEventListener("refresh_photos", handleRefresh);
+            return () => {
+                window.removeEventListener("refresh_photos", handleRefresh);
+            };
         }
     }, [open, activeFilters]);
 
@@ -175,14 +279,22 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                             Đối tượng (từ dữ liệu đã quét)
                         </div>
 
-                        {localFilters.object && (
-                            <div className="flex items-center gap-2">
-                                <span className="bg-primary/10 text-primary text-xs px-2.5 py-1 rounded-full border border-primary/20">
-                                    {localFilters.object}
-                                </span>
-                                <button onClick={() => update({ object: undefined })} className="text-muted-foreground hover:text-foreground">
-                                    <X className="w-3.5 h-3.5" />
-                                </button>
+                        {localFilters.objects && localFilters.objects.length > 0 && (
+                            <div className="flex flex-wrap gap-2">
+                                {localFilters.objects.map(obj => (
+                                    <div key={obj} className="flex items-center gap-1.5 bg-primary/10 text-primary text-xs px-2.5 py-1 rounded-full border border-primary/20">
+                                        <span>{obj}</span>
+                                        <button 
+                                            onClick={() => {
+                                                const next = localFilters.objects?.filter(o => o !== obj) || [];
+                                                update({ objects: next.length > 0 ? next : undefined });
+                                            }} 
+                                            className="text-muted-foreground hover:text-foreground p-0.5 rounded-full hover:bg-primary/20"
+                                        >
+                                            <X className="w-3 h-3" />
+                                        </button>
+                                    </div>
+                                ))}
                             </div>
                         )}
 
@@ -210,18 +322,28 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                     {filteredObjects.length === 0 ? (
                                         <span className="text-xs text-muted-foreground py-1">Không tìm thấy đối tượng phù hợp</span>
                                     ) : (
-                                        filteredObjects.map(obj => (
-                                            <button
-                                                key={obj}
-                                                onClick={() => update({ object: localFilters.object === obj ? undefined : obj })}
-                                                className={`text-xs px-2 py-1 rounded-md border transition-all ${localFilters.object === obj
-                                                        ? "bg-primary/10 border-primary/30 text-primary font-medium"
-                                                        : "border-border/40 hover:bg-muted"
+                                        filteredObjects.map(obj => {
+                                            const isActive = localFilters.objects?.includes(obj) || false;
+                                            return (
+                                                <button
+                                                    key={obj}
+                                                    onClick={() => {
+                                                        const current = localFilters.objects || [];
+                                                        const next = current.includes(obj)
+                                                            ? current.filter(o => o !== obj)
+                                                            : [...current, obj];
+                                                        update({ objects: next.length > 0 ? next : undefined });
+                                                    }}
+                                                    className={`text-xs px-2 py-1 rounded-md border transition-all ${
+                                                        isActive
+                                                            ? "bg-primary/10 border-primary/30 text-primary font-medium"
+                                                            : "border-border/40 hover:bg-muted"
                                                     }`}
-                                            >
-                                                {obj}
-                                            </button>
-                                        ))
+                                                >
+                                                    {obj}
+                                                </button>
+                                            );
+                                        })
                                     )}
                                 </div>
                             </>
@@ -271,10 +393,9 @@ export function FilterPanel({ open, onOpenChange, activeFilters, onFiltersChange
                                                 }`}
                                         >
                                             {person.thumbnail && (
-                                                <img
-                                                    src={`asset://localhost/${encodeURIComponent(person.thumbnail).replace(/%2F/g, "/")}`}
-                                                    className="w-5 h-5 rounded-full object-cover"
-                                                    alt=""
+                                                <MiniFaceCropAvatar
+                                                    rawPath={person.thumbnail}
+                                                    bbox={person.face_bbox}
                                                 />
                                             )}
                                             <span>{displayName}</span>

@@ -9,19 +9,29 @@ import { FullScreenVideoViewer } from "./FullScreenVideoViewer";
 export function FullScreenViewer({
     photo,
     onClose,
+    onNext,
+    onPrev,
     isTrashMode = false,
     isHiddenMode = false,
+    activeFaceId,
+    activeClassName,
 }: {
     photo: Photo;
     onClose: () => void;
+    onNext?: () => void;
+    onPrev?: () => void;
     isTrashMode?: boolean;
     isHiddenMode?: boolean;
+    activeFaceId?: string;
+    activeClassName?: string;
 }) {
     if (photo.type === "video") {
         return (
             <FullScreenVideoViewer
                 photo={photo}
                 onClose={onClose}
+                onNext={onNext}
+                onPrev={onPrev}
                 isTrashMode={isTrashMode}
                 isHiddenMode={isHiddenMode}
             />
@@ -31,8 +41,12 @@ export function FullScreenViewer({
         <FullScreenPhotoViewer
             photo={photo}
             onClose={onClose}
+            onNext={onNext}
+            onPrev={onPrev}
             isTrashMode={isTrashMode}
             isHiddenMode={isHiddenMode}
+            activeFaceId={activeFaceId}
+            activeClassName={activeClassName}
         />
     );
 }

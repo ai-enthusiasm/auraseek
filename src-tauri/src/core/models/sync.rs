@@ -1,5 +1,5 @@
 /// Current state of the background sync/ingest process.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SyncStatus {
     pub state:     String,
     pub processed: usize,

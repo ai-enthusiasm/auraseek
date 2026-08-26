@@ -5,7 +5,7 @@
  * - Hỗ trợ tốt: MP4 container + H.264 codec (AVC) – dùng định dạng này để test.
  * - WebM/VP9: phụ thuộc GStreamer plugins, thường thiếu mặc định.
  */
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, ChevronLeft, ChevronRight } from "lucide-react";
 import type { Photo } from "@/types/photo.type";
 import { PhotoInfoPanel } from "./PhotoInfoPanel";
 import { useState, useEffect } from "react";
@@ -21,11 +21,15 @@ const EXTERNAL_VIDEO_APP = "cine";
 export function FullScreenVideoViewer({
     photo,
     onClose,
+    onNext,
+    onPrev,
     isTrashMode = false,
     isHiddenMode = false,
 }: {
     photo: Photo;
     onClose: () => void;
+    onNext?: () => void;
+    onPrev?: () => void;
     isTrashMode?: boolean;
     isHiddenMode?: boolean;
 }) {
@@ -37,6 +41,26 @@ export function FullScreenVideoViewer({
     const [isHardDeleteOpen, setIsHardDeleteOpen] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
     const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null);
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (
+                document.activeElement?.tagName === "INPUT" ||
+                document.activeElement?.tagName === "TEXTAREA"
+            ) {
+                return;
+            }
+            if (e.key === "ArrowLeft" && onPrev) {
+                onPrev();
+            } else if (e.key === "ArrowRight" && onNext) {
+                onNext();
+            } else if (e.key === "Escape" && onClose) {
+                onClose();
+            }
+        };
+        window.addEventListener("keydown", handleKeyDown);
+        return () => window.removeEventListener("keydown", handleKeyDown);
+    }, [onNext, onPrev, onClose]);
 
     useEffect(() => {
         setIsFavorite(photo.favorite || false);
@@ -203,7 +227,28 @@ export function FullScreenVideoViewer({
                     isVideo
                 />
 
-                <div className="min-h-0 flex-1 flex items-center justify-center p-4 bg-black">
+                <div className="relative min-h-0 flex-1">
+                    {onPrev && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); onPrev(); }}
+                            className="absolute left-4 top-1/2 -translate-y-1/2 z-50 flex items-center justify-center w-12 h-12 rounded-full bg-black/40 hover:bg-black/60 active:scale-95 border border-white/10 text-white/80 hover:text-white transition-all cursor-pointer backdrop-blur-md shadow-2xl focus:outline-none"
+                            aria-label="Previous media"
+                        >
+                            <ChevronLeft className="w-6 h-6" />
+                        </button>
+                    )}
+                    {onNext && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); onNext(); }}
+                            className="absolute right-4 top-1/2 -translate-y-1/2 z-50 flex items-center justify-center w-12 h-12 rounded-full bg-black/40 hover:bg-black/60 active:scale-95 border border-white/10 text-white/80 hover:text-white transition-all cursor-pointer backdrop-blur-md shadow-2xl focus:outline-none"
+                            aria-label="Next media"
+                        >
+                            <ChevronRight className="w-6 h-6" />
+                        </button>
+                    )}
+                <div className="w-full h-full flex items-center justify-center p-4 bg-black">
                     {videoError ? (
                         <div className="flex flex-col items-center justify-center gap-4 text-center max-w-md">
                             <img
@@ -261,6 +306,7 @@ export function FullScreenVideoViewer({
                             </video>
                         </div>
                     )}
+                </div>
                 </div>
             </div>
 
