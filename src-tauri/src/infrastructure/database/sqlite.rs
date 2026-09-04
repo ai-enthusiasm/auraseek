@@ -9,25 +9,106 @@ pub struct SqliteDb {
 impl SqliteDb {
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create SQLite parent dir: {}", parent.display()))?;
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                crate::log_warn!("⚠️ Failed to create SQLite parent dir {}: {}", parent.display(), e);
+            }
         }
 
-        let conn = Connection::open(path)
-            .with_context(|| format!("Failed to open SQLite database at {}", path.display()))?;
+        let open_and_init = |db_path: &Path| -> Result<Connection> {
+            let conn = Connection::open(db_path)
+                .with_context(|| format!("Failed to open SQLite database at {}", db_path.display()))?;
 
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")
-            .context("Failed to set SQLite PRAGMAs")?;
+            if let Err(e) = conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=10000;") {
+                crate::log_warn!("⚠️ WAL journal mode failed for {}: {}. Falling back to DELETE mode.", db_path.display(), e);
+                conn.execute_batch("PRAGMA journal_mode=DELETE; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=10000;")
+                    .context("Failed to set SQLite PRAGMAs")?;
+            }
 
-        crate::log_info!("✅ SQLite opened: {}", path.display());
+            Ok(conn)
+        };
 
+        let conn = match open_and_init(path).and_then(|conn| {
+            let db = Self { conn: std::sync::Mutex::new(conn) };
+            db.ensure_schema()?;
+            db.auto_migrate_columns()?;
+            Ok(db.conn.into_inner().unwrap())
+        }) {
+            Ok(conn) => conn,
+            Err(first_err) => {
+                crate::log_warn!(
+                    "⚠️ SQLite open/schema failed at {}: {:#}. Attempting automatic database recovery...",
+                    path.display(),
+                    first_err
+                );
+
+                if path.exists() {
+                    let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+                    let corrupt_backup = path.with_extension(format!("sqlite3.corrupt.{}", timestamp));
+                    crate::log_warn!("📦 Backing up unreadable/corrupt database file to {}", corrupt_backup.display());
+                    let _ = std::fs::rename(path, &corrupt_backup);
+                    let _ = std::fs::remove_file(path.with_extension("sqlite3-wal"));
+                    let _ = std::fs::remove_file(path.with_extension("sqlite3-shm"));
+                }
+
+                let fresh_conn = open_and_init(path)?;
+                let db = Self { conn: std::sync::Mutex::new(fresh_conn) };
+                db.ensure_schema()?;
+                db.auto_migrate_columns()?;
+                db.conn.into_inner().unwrap()
+            }
+        };
+
+        crate::log_info!("✅ SQLite database opened and ready: {}", path.display());
         let db = Self { conn: std::sync::Mutex::new(conn) };
-        db.ensure_schema()?;
         Ok(db)
     }
 
     pub fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
-        self.conn.lock().unwrap()
+        self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn auto_migrate_columns(&self) -> Result<()> {
+        let conn = self.conn();
+        let migrations = [
+            ("media", "file_phash", "TEXT"),
+            ("media", "frame_ts", "REAL"),
+            ("media", "frame_idx", "INTEGER"),
+            ("media", "meta_duration", "REAL"),
+            ("media", "meta_fps", "REAL"),
+            ("media", "meta_width", "INTEGER"),
+            ("media", "meta_height", "INTEGER"),
+            ("media", "processed", "INTEGER DEFAULT 0"),
+            ("media", "favorite", "INTEGER DEFAULT 0"),
+            ("media", "is_hidden", "INTEGER DEFAULT 0"),
+            ("media", "deleted_at", "TEXT"),
+            ("media", "thumbnail", "TEXT"),
+            ("media_objects", "thumbnail", "TEXT"),
+            ("person", "thumbnail", "TEXT"),
+            ("person", "conf", "REAL"),
+            ("person", "face_bbox_x", "REAL"),
+            ("person", "face_bbox_y", "REAL"),
+            ("person", "face_bbox_w", "REAL"),
+            ("person", "face_bbox_h", "REAL"),
+            ("media_faces", "name", "TEXT"),
+            ("media_faces", "conf", "REAL"),
+            ("media_faces", "bbox_x", "REAL"),
+            ("media_faces", "bbox_y", "REAL"),
+            ("media_faces", "bbox_w", "REAL"),
+            ("media_faces", "bbox_h", "REAL"),
+            ("search_history", "filter_object", "TEXT"),
+            ("search_history", "filter_face", "TEXT"),
+            ("search_history", "filter_month", "INTEGER"),
+            ("search_history", "filter_year", "INTEGER"),
+            ("search_history", "filter_media_type", "TEXT"),
+            ("search_history", "deleted_at", "TEXT"),
+        ];
+
+        for (table, column, col_type) in migrations {
+            let sql = format!("ALTER TABLE {} ADD COLUMN {} {}", table, column, col_type);
+            let _ = conn.execute(&sql, []);
+        }
+
+        Ok(())
     }
 
     fn ensure_schema(&self) -> Result<()> {

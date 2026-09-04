@@ -70,7 +70,7 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
                         ).unwrap_or(true);
 
                         if needs_rebuild {
-                            let _ = conn.execute("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)", []);
+                            let _ = conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)", []);
                             let _ = conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)", []);
                             if let Ok(_) = conn.execute("UPDATE media SET thumbnail = NULL", []) {
                                 crate::log_info!("🔄 Schema migration: Resetting thumbnails to trigger high-res rebuilding");
@@ -92,7 +92,9 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
 
     {
         if state.qdrant_child.lock().unwrap().is_none() {
-            start_qdrant_sidecar(&app).await?;
+            if let Err(e) = start_qdrant_sidecar(&app).await {
+                crate::log_warn!("⚠️ Qdrant sidecar startup warning: {}. App will operate with SQLite fallback.", e);
+            }
         }
         let mut guard = state.qdrant_client.lock().await;
         if guard.is_none() {
@@ -116,7 +118,9 @@ pub async fn cmd_init(app: tauri::AppHandle, state: State<'_, AppState>) -> Resu
                     crate::log_info!("✅ Qdrant client connected on port {}", connect_port);
                     *guard = Some(client);
                 }
-                Err(e) => return Err(format!("Qdrant connect failed: {}", e)),
+                Err(e) => {
+                    crate::log_warn!("⚠️ Qdrant client connect warning: {}. App initialized in basic search mode.", e);
+                }
             }
         }
     }

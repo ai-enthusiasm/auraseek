@@ -62,6 +62,43 @@ pub fn fallback_data_dir() -> PathBuf {
     }
 }
 
+/// Resolves a guaranteed writeable data directory for AuraSeek on all operating systems.
+pub fn resolve_app_data_dir(app_data_dir: Option<PathBuf>) -> PathBuf {
+    let check_writable = |p: &PathBuf| -> bool {
+        if std::fs::create_dir_all(p).is_ok() {
+            let test_file = p.join(".write_test");
+            if std::fs::write(&test_file, b"test").is_ok() {
+                let _ = std::fs::remove_file(test_file);
+                return true;
+            }
+        }
+        false
+    };
+
+    #[cfg(target_os = "macos")]
+    {
+        let legacy_path = dirs_home().join("Library").join("Application Support").join("auraseek");
+        if legacy_path.join("auraseek.sqlite3").exists() {
+            return legacy_path;
+        }
+    }
+
+    if let Some(dir) = app_data_dir {
+        if check_writable(&dir) {
+            return dir;
+        }
+    }
+
+    let fallback = fallback_data_dir();
+    if check_writable(&fallback) {
+        return fallback;
+    }
+
+    let temp_fallback = std::env::temp_dir().join("auraseek_data");
+    let _ = std::fs::create_dir_all(&temp_fallback);
+    temp_fallback
+}
+
 /// Default log file path for the current platform.
 pub fn default_log_path() -> String {
     #[cfg(windows)]

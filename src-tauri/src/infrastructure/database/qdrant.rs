@@ -34,6 +34,14 @@ impl QdrantService {
         let bin = Self::qdrant_binary_name();
         let candidate = data_dir.join("qdrant").join(bin);
         if candidate.exists() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(mut perms) = std::fs::metadata(&candidate).map(|m| m.permissions()) {
+                    perms.set_mode(0o755);
+                    let _ = std::fs::set_permissions(&candidate, perms);
+                }
+            }
             crate::log_info!("🗄️  Found Qdrant binary: {}", candidate.display());
             return Some(candidate);
         }
@@ -44,6 +52,14 @@ impl QdrantService {
             let first_line = s.lines().next().unwrap_or("").trim().to_string();
             if !first_line.is_empty() {
                 let p = PathBuf::from(&first_line);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Ok(mut perms) = std::fs::metadata(&p).map(|m| m.permissions()) {
+                        perms.set_mode(0o755);
+                        let _ = std::fs::set_permissions(&p, perms);
+                    }
+                }
                 crate::log_info!("🗄️  Found Qdrant binary (PATH): {}", p.display());
                 return Some(p);
             }
@@ -276,6 +292,11 @@ impl QdrantService {
         }
         // Give the OS a moment to release file locks and sockets
         std::thread::sleep(Duration::from_millis(500));
+
+        // Clean up any stale database locks left by abnormal crashes
+        let _ = std::fs::remove_file(storage_dir.join(".lock"));
+        let _ = std::fs::remove_file(storage_dir.join(".qdrant.lock"));
+        let _ = std::fs::remove_file(storage_dir.join("raft_state").join(".lock"));
 
         let binary = Self::find_binary(data_dir)
             .ok_or_else(|| anyhow::anyhow!(
