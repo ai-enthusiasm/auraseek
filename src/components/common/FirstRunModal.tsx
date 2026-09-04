@@ -14,7 +14,7 @@ export function FirstRunModal({ onComplete }: FirstRunModalProps) {
   const [error, setError] = useState("");
 
   const isWindows = typeof navigator !== 'undefined' && navigator.userAgent.toLowerCase().includes("win");
-  const placeholderTxt = isWindows ? "C:\\Users\\PhuocDai\\Pictures" : "/Users/phuocdai/Pictures";
+  const placeholderTxt = isWindows ? "C:\\Users\\Pictures" : "/Users/Pictures";
 
   const handleConfirm = async () => {
     const trimmed = dir.trim();
