@@ -175,9 +175,12 @@ jobs:
       # opencv-rust build.rs loads libclang.dylib; Xcode CLI tools alone are not enough on GHA.
       - name: Install LLVM + OpenCV (macOS)
         run: |
-          brew install llvm opencv pkg-config
+          brew install llvm opencv@4 pkg-config
           echo "LIBCLANG_PATH=$(brew --prefix llvm)/lib" >> "$GITHUB_ENV"
-          echo "PATH=$(brew --prefix llvm)/bin:$PATH" >> "$GITHUB_ENV"
+          echo "PATH=$(brew --prefix llvm)/bin:$(brew --prefix opencv@4)/bin:$PATH" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=$(brew --prefix opencv@4)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$(brew --prefix opencv@4)" >> "$GITHUB_ENV"
+          echo "OpenCV_DIR=$(brew --prefix opencv@4)" >> "$GITHUB_ENV"
 
       - name: Build macOS app
         run: yarn tauri:build:macos
